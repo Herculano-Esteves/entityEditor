@@ -1,0 +1,225 @@
+"""
+Core data models for the Entity Editor.
+
+This module defines the fundamental data structures used throughout the editor:
+- Vec2: 2D vector for positions and sizes
+- UVRect: UV rectangle with normalized coordinates
+- Hitbox: Rectangular collision/interaction area
+- BodyPart: Visual component with texture and UV mapping
+- Entity: Complete entity definition with body parts
+"""
+
+from dataclasses import dataclass, field, asdict
+from typing import List, Optional, Dict, Any
+from enum import Enum
+import uuid
+
+
+@dataclass
+class Vec2:
+    """2D vector for positions and sizes."""
+    x: float = 0.0
+    y: float = 0.0
+    
+    def to_dict(self) -> Dict[str, float]:
+        """Convert to dictionary for serialization."""
+        return {"x": self.x, "y": self.y}
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, float]) -> 'Vec2':
+        """Create from dictionary."""
+        return cls(x=data.get("x", 0.0), y=data.get("y", 0.0))
+    
+    def __iter__(self):
+        """Allow tuple unpacking."""
+        yield self.x
+        yield self.y
+
+
+@dataclass
+class UVRect:
+    """
+    UV rectangle with normalized coordinates (0.0 to 1.0).
+    Represents a rectangular region within a texture.
+    """
+    x: float = 0.0      # Left edge (normalized)
+    y: float = 0.0      # Top edge (normalized)
+    width: float = 1.0  # Width (normalized)
+    height: float = 1.0 # Height (normalized)
+    
+    def to_dict(self) -> Dict[str, float]:
+        """Convert to dictionary for serialization."""
+        return {
+            "x": self.x,
+            "y": self.y,
+            "width": self.width,
+            "height": self.height
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, float]) -> 'UVRect':
+        """Create from dictionary."""
+        return cls(
+            x=data.get("x", 0.0),
+            y=data.get("y", 0.0),
+            width=data.get("width", 1.0),
+            height=data.get("height", 1.0)
+        )
+    
+    def get_pixel_coords(self, texture_width: int, texture_height: int) -> tuple:
+        """
+        Convert normalized UV coordinates to pixel coordinates.
+        Returns (px_x, px_y, px_width, px_height).
+        """
+        return (
+            int(self.x * texture_width),
+            int(self.y * texture_height),
+            int(self.width * texture_width),
+            int(self.height * texture_height)
+        )
+
+
+@dataclass
+class Hitbox:
+    """
+    Rectangular hitbox for collision detection or interaction areas.
+    Can be attached to an entity or specific body part.
+    """
+    name: str = "Hitbox"
+    position: Vec2 = field(default_factory=Vec2)
+    size: Vec2 = field(default_factory=lambda: Vec2(32.0, 32.0))
+    hitbox_type: str = "collision"  # e.g., "collision", "damage", "trigger"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "name": self.name,
+            "position": self.position.to_dict(),
+            "size": self.size.to_dict(),
+            "hitbox_type": self.hitbox_type
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Hitbox':
+        """Create from dictionary."""
+        return cls(
+            name=data.get("name", "Hitbox"),
+            position=Vec2.from_dict(data.get("position", {})),
+            size=Vec2.from_dict(data.get("size", {"x": 32.0, "y": 32.0})),
+            hitbox_type=data.get("hitbox_type", "collision")
+        )
+
+
+@dataclass
+class BodyPart:
+    """
+    Individual body part of an entity.
+    Contains visual representation (texture + UV) and associated hitboxes.
+    """
+    name: str = "BodyPart"
+    position: Vec2 = field(default_factory=Vec2)
+    size: Vec2 = field(default_factory=lambda: Vec2(64.0, 64.0))
+    texture_path: str = ""  # Relative or absolute path to texture file
+    uv_rect: UVRect = field(default_factory=UVRect)
+    hitboxes: List[Hitbox] = field(default_factory=list)
+    
+    # Visual properties
+    rotation: float = 0.0  # Rotation in degrees
+    z_order: int = 0       # Draw order (higher = drawn on top)
+    visible: bool = True
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "name": self.name,
+            "position": self.position.to_dict(),
+            "size": self.size.to_dict(),
+            "texture_path": self.texture_path,
+            "uv_rect": self.uv_rect.to_dict(),
+            "hitboxes": [hb.to_dict() for hb in self.hitboxes],
+            "rotation": self.rotation,
+            "z_order": self.z_order,
+            "visible": self.visible
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'BodyPart':
+        """Create from dictionary."""
+        return cls(
+            name=data.get("name", "BodyPart"),
+            position=Vec2.from_dict(data.get("position", {})),
+            size=Vec2.from_dict(data.get("size", {"x": 64.0, "y": 64.0})),
+            texture_path=data.get("texture_path", ""),
+            uv_rect=UVRect.from_dict(data.get("uv_rect", {})),
+            hitboxes=[Hitbox.from_dict(hb) for hb in data.get("hitboxes", [])],
+            rotation=data.get("rotation", 0.0),
+            z_order=data.get("z_order", 0),
+            visible=data.get("visible", True)
+        )
+
+
+@dataclass
+class Entity:
+    """
+    Top-level entity definition.
+    Contains metadata, body parts, and optional entity-level hitboxes.
+    """
+    name: str = "NewEntity"
+    entity_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    pivot: Vec2 = field(default_factory=Vec2)  # Entity center/pivot point
+    body_parts: List[BodyPart] = field(default_factory=list)
+    entity_hitboxes: List[Hitbox] = field(default_factory=list)  # Entity-level hitboxes
+    
+    # Metadata
+    version: str = "1.0"
+    tags: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Extensible metadata
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "name": self.name,
+            "entity_id": self.entity_id,
+            "pivot": self.pivot.to_dict(),
+            "body_parts": [bp.to_dict() for bp in self.body_parts],
+            "entity_hitboxes": [hb.to_dict() for hb in self.entity_hitboxes],
+            "version": self.version,
+            "tags": self.tags,
+            "metadata": self.metadata
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Entity':
+        """Create from dictionary."""
+        return cls(
+            name=data.get("name", "NewEntity"),
+            entity_id=data.get("entity_id", str(uuid.uuid4())),
+            pivot=Vec2.from_dict(data.get("pivot", {})),
+            body_parts=[BodyPart.from_dict(bp) for bp in data.get("body_parts", [])],
+            entity_hitboxes=[Hitbox.from_dict(hb) for hb in data.get("entity_hitboxes", [])],
+            version=data.get("version", "1.0"),
+            tags=data.get("tags", []),
+            metadata=data.get("metadata", {})
+        )
+    
+    def get_body_part(self, name: str) -> Optional[BodyPart]:
+        """Get body part by name."""
+        for bp in self.body_parts:
+            if bp.name == name:
+                return bp
+        return None
+    
+    def add_body_part(self, body_part: BodyPart) -> None:
+        """Add a body part to the entity."""
+        self.body_parts.append(body_part)
+    
+    def remove_body_part(self, body_part: BodyPart) -> bool:
+        """Remove a body part from the entity. Returns True if successful."""
+        if body_part in self.body_parts:
+            self.body_parts.remove(body_part)
+            return True
+        return False
+    
+    def get_sorted_body_parts(self) -> List[BodyPart]:
+        """Get body parts sorted by z_order (for rendering)."""
+        return sorted(self.body_parts, key=lambda bp: bp.z_order)
