@@ -195,10 +195,6 @@ The architecture supports easy addition of:
 ### Contributing
 This is a game development tool. Contributions focused on usability, performance, and new features are welcome.
 
-## License
-
-MIT License - See LICENSE file for details
-
 ## Credits
 
 Created as a professional game development tool. Built with Python 3 and PySide6.

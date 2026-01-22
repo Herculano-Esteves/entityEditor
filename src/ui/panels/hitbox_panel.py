@@ -4,9 +4,11 @@ Hitbox Editor Panel for Entity Editor.
 Panel for managing and editing hitboxes.
 """
 
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                                QListWidget, QListWidgetItem, QFormLayout, 
-                                QDoubleSpinBox, QLineEdit, QComboBox, QGroupBox, QLabel)
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
+    QGroupBox, QFormLayout, QLineEdit, QPushButton, QDoubleSpinBox,
+    QComboBox, QCheckBox, QLabel
+)
 from PySide6.QtCore import Qt
 import sys
 import os
@@ -48,9 +50,22 @@ class HitboxPanel(QWidget):
         
         # Buttons
         buttons_layout = QHBoxLayout()
-        self._add_btn = QPushButton("Add Hitbox")
+        
+        # Edit mode toggle
+        self._edit_mode_check = QCheckBox("Edit Hitboxes")
+        self._edit_mode_check.toggled.connect(self._on_edit_mode_changed)
+        self._edit_mode_check.setToolTip("Enable hitbox editing mode\n(Shortcut: Hold Shift)")
+        buttons_layout.addWidget(self._edit_mode_check)
+        
+        buttons_layout.addStretch()
+        
+        self._add_btn = QPushButton("Add")
         self._add_btn.clicked.connect(self._on_add_hitbox)
         buttons_layout.addWidget(self._add_btn)
+        
+        self._duplicate_btn = QPushButton("Duplicate")
+        self._duplicate_btn.clicked.connect(self._on_duplicate_hitbox)
+        buttons_layout.addWidget(self._duplicate_btn)
         
         self._remove_btn = QPushButton("Remove")
         self._remove_btn.clicked.connect(self._on_remove_hitbox)
@@ -64,7 +79,7 @@ class HitboxPanel(QWidget):
         
         # Name
         self._name_edit = QLineEdit()
-        self._name_edit.textChanged.connect(self._on_property_changed)
+        self._name_edit.editingFinished.connect(self._on_name_changed)  # Only when done editing
         props_layout.addRow("Name:", self._name_edit)
         
         # Type
@@ -128,15 +143,46 @@ class HitboxPanel(QWidget):
         self._hitbox_list.clear()
         
         if not self._selected_bodypart:
-            self._add_btn.setEnabled(False)
+            # Disable edit mode when no body part selected
+            self._edit_mode_check.setEnabled(False)
+            if self._edit_mode_check.isChecked():
+                self._edit_mode_check.setChecked(False)
             return
+        
+        # Enable edit mode when body part is selected
+        self._edit_mode_check.setEnabled(True)
         
         self._add_btn.setEnabled(True)
         
         for hitbox in self._selected_bodypart.hitboxes:
-            item = QListWidgetItem(f"{hitbox.name} ({hitbox.hitbox_type})")
+            # Create list item
+            item = QListWidgetItem()
             item.setData(Qt.UserRole, hitbox)
             self._hitbox_list.addItem(item)
+            
+            # Create custom widget with eye icon and name
+            widget = QWidget()
+            layout = QHBoxLayout(widget)
+            layout.setContentsMargins(4, 2, 4, 2)
+            layout.setSpacing(4)
+            
+            # Eye button for visibility toggle
+            eye_btn = QPushButton()
+            eye_btn.setFixedSize(20, 20)
+            eye_btn.setFlat(True)
+            eye_btn.setText("👁" if hitbox.enabled else "⚫")
+            eye_btn.setToolTip("Toggle visibility")
+            eye_btn.clicked.connect(lambda checked, hb=hitbox: self._toggle_visibility(hb))
+            layout.addWidget(eye_btn)
+            
+            # Name label with type color indicator
+            type_color = {"collision": "#ff6464", "damage": "#ffc864", "trigger": "#64ff64"}.get(hitbox.hitbox_type, "#c8c8c8")
+            name_label = QLabel(f'<span style="color:{type_color}">■</span> {hitbox.name}')
+            layout.addWidget(name_label)
+            layout.addStretch()
+            
+            item.setSizeHint(widget.sizeHint())
+            self._hitbox_list.setItemWidget(item, widget)
     
     def _on_selection_changed(self, current, previous):
         """Handle selection change in list."""
@@ -156,10 +202,15 @@ class HitboxPanel(QWidget):
             return
         
         count = len(self._selected_bodypart.hitboxes)
+        
+        # Default hitbox size matches body part's rendered size
+        default_w = self._selected_bodypart.size.x * self._selected_bodypart.pixel_scale
+        default_h = self._selected_bodypart.size.y * self._selected_bodypart.pixel_scale
+        
         hitbox = Hitbox(
             name=f"Hitbox_{count}",
             position=Vec2(0, 0),
-            size=Vec2(32, 32),
+            size=Vec2(default_w, default_h),
             hitbox_type="collision"
         )
         self._selected_bodypart.hitboxes.append(hitbox)
@@ -168,6 +219,48 @@ class HitboxPanel(QWidget):
         
         # Select the new hitbox
         self._hitbox_list.setCurrentRow(self._hitbox_list.count() - 1)
+    
+    def _on_duplicate_hitbox(self):
+        """Duplicate the selected hitbox."""
+        if not self._selected_bodypart or not self._selected_hitbox:
+            return
+        
+        # Create a copy
+        import copy
+        hitbox_copy = copy.deepcopy(self._selected_hitbox)
+        
+        # Modify name (add "2" or increment number)
+        base_name = hitbox_copy.name
+        if base_name[-1].isdigit():
+            import re
+            match = re.match(r'(.+?)(\d+)$', base_name)
+            if match:
+                hitbox_copy.name = match.group(1) + str(int(match.group(2)) + 1)
+            else:
+                hitbox_copy.name = base_name + "2"
+        else:
+            hitbox_copy.name = base_name + "2"
+        
+        # Offset position slightly
+        hitbox_copy.position.x += 5
+        hitbox_copy.position.y += 5
+        
+        self._selected_bodypart.hitboxes.append(hitbox_copy)
+        self._signal_hub.notify_hitbox_added(hitbox_copy)
+        self._refresh_list()
+        
+        # Select the new hitbox
+        self._hitbox_list.setCurrentRow(self._hitbox_list.count() - 1)
+    
+    def _on_edit_mode_changed(self, checked: bool):
+        """Handle edit mode toggle."""
+        self._signal_hub.notify_hitbox_edit_mode_changed(checked)
+    
+    def _toggle_visibility(self, hitbox):
+        """Toggle hitbox visibility."""
+        hitbox.enabled = not hitbox.enabled
+        self._signal_hub.notify_hitbox_modified(hitbox)
+        self._refresh_list()  # Refresh to update eye icon
     
     def _on_remove_hitbox(self):
         """Remove the selected hitbox."""
@@ -179,24 +272,44 @@ class HitboxPanel(QWidget):
             self._signal_hub.notify_hitbox_removed(self._selected_hitbox)
             self._refresh_list()
     
+    def _on_name_changed(self):
+        """Handle name editing finished (to update list labels)."""
+        if not self._selected_hitbox:
+            return
+        
+        old_name = self._selected_hitbox.name
+        self._selected_hitbox.name = self._name_edit.text()
+        
+        # Update only the label widget for the current item (don't refresh entire list)
+        if old_name != self._selected_hitbox.name:
+            current_item = self._hitbox_list.currentItem()
+            if current_item:
+                widget = self._hitbox_list.itemWidget(current_item)
+                if widget:
+                    # Find the QLabel in the widget and update its text
+                    from PySide6.QtWidgets import QLabel
+                    label = widget.findChild(QLabel)
+                    if label:
+                        # Update with colored type indicator
+                        type_color = {"collision": "#ff6464", "damage": "#ffc864", "trigger": "#64ff64"}.get(self._selected_hitbox.hitbox_type, "#c8c8c8")
+                        label.setText(f'<span style="color:{type_color}">■</span> {self._selected_hitbox.name}')
+        
+        # Notify modification
+        self._signal_hub.notify_hitbox_modified(self._selected_hitbox)
+    
     def _on_property_changed(self):
         """Handle property change."""
         if not self._selected_hitbox:
             return
         
-        # Update hitbox from UI
-        self._selected_hitbox.name = self._name_edit.text()
+        # Update hitbox from UI (skip name, it has its own handler)
         self._selected_hitbox.hitbox_type = self._type_combo.currentText()
         self._selected_hitbox.position.x = self._pos_x_spin.value()
         self._selected_hitbox.position.y = self._pos_y_spin.value()
         self._selected_hitbox.size.x = self._size_x_spin.value()
         self._selected_hitbox.size.y = self._size_y_spin.value()
         
-        # Update list item name
-        current_item = self._hitbox_list.currentItem()
-        if current_item:
-            current_item.setText(f"{self._selected_hitbox.name} ({self._selected_hitbox.hitbox_type})")
-        
+        # Notify modification
         self._signal_hub.notify_hitbox_modified(self._selected_hitbox)
     
     def _update_properties(self):
@@ -238,3 +351,4 @@ class HitboxPanel(QWidget):
         self._size_x_spin.setEnabled(enabled)
         self._size_y_spin.setEnabled(enabled)
         self._remove_btn.setEnabled(enabled)
+        self._duplicate_btn.setEnabled(enabled)

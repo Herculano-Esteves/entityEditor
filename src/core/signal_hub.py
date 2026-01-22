@@ -34,14 +34,21 @@ class SignalHub(QObject):
     hitbox_added = Signal(object)        # Emitted when a hitbox is added (passes Hitbox)
     hitbox_removed = Signal(object)      # Emitted when a hitbox is removed (passes Hitbox)
     hitbox_modified = Signal(object)     # Emitted when a hitbox is modified (passes Hitbox)
+    hitbox_edit_mode_changed = Signal(bool)  # Emitted when hitbox edit mode toggles
     
     # Texture signals
     texture_loaded = Signal(str)         # Emitted when a texture is loaded (passes filepath)
     uv_modified = Signal(object)         # Emitted when UV rect is modified (passes BodyPart)
     
+    # UV Tile signals
+    uv_tile_created = Signal(object)     # Emitted when a UV tile is created (passes UVTile)
+    uv_tile_applied = Signal(object, object)  # Emitted when tile applied (UVTile, BodyPart)
+    uv_rect_selected = Signal(object)    # Emitted when UV rect selected in editor
+    
     # Viewport signals
     viewport_selection_changed = Signal(object)  # Emitted when selection changes in viewport
     viewport_transform_changed = Signal()        # Emitted when viewport zoom/pan changes
+    snap_value_changed = Signal(float)           # Emitted when grid snap value changes
     
     def __init__(self):
         super().__init__()
@@ -109,6 +116,23 @@ class SignalHub(QObject):
         """Notify that a UV rect has been modified."""
         self.uv_modified.emit(bodypart)
         self.entity_modified.emit()
+    
+    def notify_hitbox_edit_mode_changed(self, enabled: bool):
+        """Notify that hitbox edit mode has been toggled."""
+        self.hitbox_edit_mode_changed.emit(enabled)
+    
+    def notify_uv_tile_created(self, uv_tile):
+        """Notify that a UV tile has been created."""
+        self.uv_tile_created.emit(uv_tile)
+    
+    def notify_uv_tile_applied(self, uv_tile, bodypart):
+        """Notify that a UV tile has been applied to a body part."""
+        self.uv_tile_applied.emit(uv_tile, bodypart)
+        self.entity_modified.emit()
+    
+    def notify_snap_value_changed(self, snap_value: float):
+        """Notify that grid snap value has changed."""
+        self.snap_value_changed.emit(snap_value)
     
     def notify_viewport_selection_changed(self, selected_object):
         """Notify that viewport selection has changed."""

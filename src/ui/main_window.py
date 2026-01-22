@@ -5,7 +5,7 @@ The main application window with menu bar, dockable panels, and central viewport
 """
 
 from PySide6.QtWidgets import (QMainWindow, QDockWidget, QFileDialog, QMessageBox,
-                                QToolBar, QStatusBar)
+                                QToolBar, QStatusBar, QLabel)
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QAction, QKeySequence
 from pathlib import Path
@@ -110,6 +110,12 @@ class MainWindow(QMainWindow):
         
         file_menu.addSeparator()
         
+        export_json_action = QAction("Export as &JSON...", self)
+        export_json_action.triggered.connect(self._export_as_json)
+        file_menu.addAction(export_json_action)
+        
+        file_menu.addSeparator()
+        
         exit_action = QAction("E&xit", self)
         exit_action.setShortcut(QKeySequence.Quit)
         exit_action.triggered.connect(self.close)
@@ -144,6 +150,22 @@ class MainWindow(QMainWindow):
         save_action = QAction("Save", self)
         save_action.triggered.connect(self._save_entity)
         toolbar.addAction(save_action)
+        
+        toolbar.addSeparator()
+        
+        # Grid snap controls
+        toolbar.addWidget(QLabel("  Grid Snap (px):"))
+        
+        from PySide6.QtWidgets import QComboBox
+        self._snap_combo = QComboBox()
+        self._snap_combo.addItems(["Off", "1", "2", "4", "8", "16", "32", "Custom..."])
+        self._snap_combo.setCurrentIndex(1)  # Default: 1px for pixel-perfect
+        self._snap_combo.currentTextChanged.connect(self._on_snap_changed)
+        self._snap_combo.setToolTip("Grid snap in pixels (always active when dragging)")
+        toolbar.addWidget(self._snap_combo)
+        
+        # Store current snap value
+        self._current_snap_value = 1.0  # Default 1px
     
     def _setup_statusbar(self):
         """Setup status bar."""
@@ -234,6 +256,79 @@ class MainWindow(QMainWindow):
                 "Error",
                 f"Failed to save entity:\n{str(e)}"
             )
+    
+    def _export_as_json(self):
+        """Export the current entity as JSON."""
+        if not self._current_entity:
+            return
+        
+        # Get filename
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Entity as JSON",
+            "",
+            "JSON Files (*.json);;All Files (*.*)"
+        )
+        
+        if not filename:
+            return
+        
+        # Ensure .json extension
+        if not filename.endswith('.json'):
+            filename += '.json'
+        
+        try:
+            EntitySerializer.save_json_debug(self._current_entity, filename)
+            self._statusbar.showMessage(f"Exported to JSON: {Path(filename).name}")
+            QMessageBox.information(
+                self,
+                "Export Successful",
+                f"Entity exported to:\n{filename}\n\nThis JSON file is human-readable and can be used for debugging or external tools."
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to export entity:\n{str(e)}"
+            )
+    
+    def _on_snap_changed(self, text: str):
+        """Handle grid snap value change."""
+        if text == "Off":
+            self._current_snap_value = 0.0
+        elif text == "Custom...":
+            # Show input dialog for custom pixel value
+            from PySide6.QtWidgets import QInputDialog
+            value, ok = QInputDialog.getInt(
+                self,
+                "Custom Snap Value",
+                "Enter snap value (pixels):",
+                8,  # default
+                1,  # min
+                128,  # max
+            )
+            if ok:
+                self._current_snap_value = float(value)
+                # Update combo to show custom value
+                if self._snap_combo.count() > 7:
+                    self._snap_combo.removeItem(7)
+                self._snap_combo.addItem(str(value))
+                self._snap_combo.setCurrentIndex(7)
+            else:
+                # User cancelled, reset to previous
+                self._snap_combo.setCurrentIndex(0)
+                self._current_snap_value = 0.0
+        else:
+            self._current_snap_value = float(text)
+        
+        # Notify viewport of snap value change
+        self._signal_hub.notify_snap_value_changed(self._current_snap_value)
+        
+        # Update status bar
+        if self._current_snap_value > 0:
+            self._statusbar.showMessage(f"Grid snap: {int(self._current_snap_value)}px (always active)", 3000)
+        else:
+            self._statusbar.showMessage("Grid snap: Off", 2000)
     
     def _check_save_changes(self) -> bool:
         """Check if there are unsaved changes and prompt user. Returns True if okay to proceed."""

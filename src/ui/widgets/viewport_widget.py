@@ -55,10 +55,21 @@ class ViewportWidget(QWidget):
         self._is_panning = False
         self._pan_start_pos = QPointF()
         
+        # Hitbox editing state
+        self._hitbox_edit_mode = False
+        self._dragging_hitbox = None
+        self._drag_start_hitbox_pos = Vec2()
+        self._dragging_hitbox_parent = None
+        self._resize_edge = None  # 'left', 'right', 'top', 'bottom', 'tl', 'tr', 'bl', 'br'
+        self._drag_start_hitbox_size = Vec2()
+        
         # Display options
         self._show_grid = True
         self._show_pivot = True
         self._show_hitboxes = True
+        
+        # Grid snap
+        self._snap_value = 0.0  # 0 = off
         
         # Setup
         self.setMinimumSize(400, 400)
@@ -73,6 +84,9 @@ class ViewportWidget(QWidget):
         self._signal_hub.bodypart_added.connect(lambda _: self.update())
         self._signal_hub.bodypart_removed.connect(lambda _: self.update())
         self._signal_hub.bodypart_reordered.connect(self.update)
+        self._signal_hub.snap_value_changed.connect(self._on_snap_value_changed)
+        self._signal_hub.hitbox_edit_mode_changed.connect(self._on_hitbox_edit_mode_changed)
+        self._signal_hub.hitbox_selected.connect(self._on_hitbox_selected)
     
     def set_entity(self, entity: Optional[Entity]):
         """Set the entity to display."""
@@ -126,14 +140,75 @@ class ViewportWidget(QWidget):
             if not bp.visible:
                 continue
             
-            # Check if point is inside body part bounds
+            # Check if point is inside body part bounds (accounting for pixel_scale)
             left = bp.position.x
             top = bp.position.y
-            right = left + bp.size.x
-            bottom = top + bp.size.y
+            right = left + (bp.size.x * bp.pixel_scale)
+            bottom = top + (bp.size.y * bp.pixel_scale)
             
             if left <= world_pos.x() <= right and top <= world_pos.y() <= bottom:
                 return bp
+        
+        return None
+    
+    def _get_hitbox_at(self, world_pos: QPointF) -> Tuple[Optional[Hitbox], Optional[BodyPart]]:
+        """Find hitbox at world position. Returns (hitbox, parent_bodypart)."""
+        if not self._entity:
+            return None, None
+        
+        # Only check hitboxes from the selected body part if one is selected
+        if self._selected_bodypart:
+            parts_to_check = [self._selected_bodypart]
+        else:
+            # Check all body parts in reverse z-order
+            parts_to_check = sorted(self._entity.body_parts, key=lambda bp: bp.z_order, reverse=True)
+        
+        for bp in parts_to_check:
+            if not bp.visible:
+                continue
+            
+            for hitbox in bp.hitboxes:
+                # Calculate absolute hitbox position
+                x = bp.position.x + hitbox.position.x
+                y = bp.position.y + hitbox.position.y
+                
+                if x <= world_pos.x() <= x + hitbox.size.x and y <= world_pos.y() <= y + hitbox.size.y:
+                    return hitbox, bp
+        
+        return None, None
+    
+    def _get_hitbox_edge(self, hitbox: Hitbox, parent_bp: BodyPart, world_pos: QPointF) -> Optional[str]:
+        """Determine if click is near edge/corner for resizing. Returns edge identifier or None."""
+        grab_distance = 8 / self._zoom  # Pixels in world space
+        
+        # Calculate absolute hitbox position
+        x = parent_bp.position.x + hitbox.position.x
+        y = parent_bp.position.y + hitbox.position.y
+        w = hitbox.size.x
+        h = hitbox.size.y
+        
+        wx = world_pos.x()
+        wy = world_pos.y()
+        
+        # Check corners first (priority over edges)
+        if abs(wx - x) < grab_distance and abs(wy - y) < grab_distance:
+            return 'tl'  # top-left
+        if abs(wx - (x + w)) < grab_distance and abs(wy - y) < grab_distance:
+            return 'tr'  # top-right
+        if abs(wx - x) < grab_distance and abs(wy - (y + h)) < grab_distance:
+            return 'bl'  # bottom-left
+        if abs(wx - (x + w)) < grab_distance and abs(wy - (y + h)) < grab_distance:
+            return 'br'  # bottom-right
+        
+        # Check edges
+        if abs(wx - x) < grab_distance and y <= wy <= y + h:
+            return 'left'
+        if abs(wx - (x + w)) < grab_distance and y <= wy <= y + h:
+            return 'right'
+        if abs(wy - y) < grab_distance and x <= wx <= x + w:
+            return 'top'
+        if abs(wy - (y + h)) < grab_distance and x <= wx <= x + w:
+            return 'bottom'
         
         return None
     
@@ -144,8 +219,9 @@ class ViewportWidget(QWidget):
             
         painter = QPainter(self)
         try:
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            # Don't use smooth transform for pixel art - keep it crisp
+            # painter.setRenderHint(QPainter.Antialiasing)
+            # painter.setRenderHint(QPainter.SmoothPixmapTransform)
             
             # Fill background
             painter.fillRect(self.rect(), QColor(45, 45, 48))
@@ -234,9 +310,35 @@ class ViewportWidget(QWidget):
                         px_x, px_y, px_w, px_h = bp.uv_rect.get_pixel_coords(tex_size[0], tex_size[1])
                         sub_pixmap = pixmap.copy(px_x, px_y, px_w, px_h)
                         
-                        # Draw scaled to body part size
-                        target_rect = QRectF(bp.position.x, bp.position.y, bp.size.x, bp.size.y)
+                        # Apply flipping
+                        if bp.flip_x or bp.flip_y:
+                            from PySide6.QtGui import QTransform
+                            flip_transform = QTransform()
+                            if bp.flip_x:
+                                flip_transform.scale(-1, 1)
+                            if bp.flip_y:
+                                flip_transform.scale(1, -1)
+                            sub_pixmap = sub_pixmap.transformed(flip_transform)
+                        
+                        # Draw with rotation
+                        render_width = bp.size.x * bp.pixel_scale
+                        render_height = bp.size.y * bp.pixel_scale
+                        
+                        if bp.rotation != 0:
+                            # Save state and apply rotation transform
+                            painter.save()
+                            # Rotate around center of sprite
+                            center_x = bp.position.x + render_width / 2
+                            center_y = bp.position.y + render_height / 2
+                            painter.translate(center_x, center_y)
+                            painter.rotate(bp.rotation)
+                            painter.translate(-center_x, -center_y)
+                        
+                        target_rect = QRectF(bp.position.x, bp.position.y, render_width, render_height)
                         painter.drawPixmap(target_rect, sub_pixmap, QRectF(sub_pixmap.rect()))
+                        
+                        if bp.rotation != 0:
+                            painter.restore()
             else:
                 # Draw placeholder rectangle
                 painter.setBrush(QColor(100, 100, 120, 128))
@@ -250,10 +352,12 @@ class ViewportWidget(QWidget):
                 painter.setBrush(Qt.NoBrush)
                 painter.drawRect(QRectF(bp.position.x, bp.position.y, bp.size.x, bp.size.y))
             
-            # Draw hitboxes
+            # Draw hitboxes (only for selected body part if one is selected)
             if self._show_hitboxes:
-                for hitbox in bp.hitboxes:
-                    self._draw_hitbox(painter, hitbox, bp.position)
+                # Only draw hitboxes if this is the selected body part, or no body part is selected
+                if self._selected_bodypart is None or bp == self._selected_bodypart:
+                    for hitbox in bp.hitboxes:
+                        self._draw_hitbox(painter, hitbox, bp.position)
         
         # Draw entity-level hitboxes
         if self._show_hitboxes and hasattr(self._entity, 'entity_hitboxes'):
@@ -271,11 +375,28 @@ class ViewportWidget(QWidget):
         color = colors.get(hitbox.hitbox_type, QColor(200, 200, 200, 100))
         
         painter.setBrush(color)
-        painter.setPen(QPen(color.darker(150), 1 / self._zoom))
+        
+        # Highlight selected hitbox
+        if hitbox == self._selected_hitbox:
+            painter.setPen(QPen(QColor(255, 255, 100), 2 / self._zoom))
+        else:
+            painter.setPen(QPen(color.darker(150), 1 / self._zoom))
         
         x = offset.x + hitbox.position.x
         y = offset.y + hitbox.position.y
         painter.drawRect(QRectF(x, y, hitbox.size.x, hitbox.size.y))
+        
+        # Draw resize handles if selected and in edit mode
+        if hitbox == self._selected_hitbox and self._hitbox_edit_mode:
+            handle_size = 6 / self._zoom
+            painter.setBrush(QColor(255, 255, 100))
+            painter.setPen(QPen(QColor(100, 100, 100), 1 / self._zoom))
+            
+            # Corner handles
+            painter.drawEllipse(QPointF(x, y), handle_size, handle_size)
+            painter.drawEllipse(QPointF(x + hitbox.size.x, y), handle_size, handle_size)
+            painter.drawEllipse(QPointF(x, y + hitbox.size.y), handle_size, handle_size)
+            painter.drawEllipse(QPointF(x + hitbox.size.x, y + hitbox.size.y), handle_size, handle_size)
     
     def _draw_ui_overlay(self, painter: QPainter):
         """Draw UI overlay in screen space."""
@@ -292,6 +413,43 @@ class ViewportWidget(QWidget):
         """Handle mouse press."""
         if event.button() == Qt.LeftButton:
             world_pos = self._screen_to_world(QPointF(event.pos()))
+            
+            # Check for hitbox interaction if in edit mode
+            if self._hitbox_edit_mode:
+                hitbox, parent_bp = self._get_hitbox_at(world_pos)
+                
+                if hitbox:
+                    # Check if clicking near edge for resize
+                    edge = self._get_hitbox_edge(hitbox, parent_bp, world_pos)
+                    
+                    if edge:
+                        # Start resizing
+                        self._dragging_hitbox = hitbox
+                        self._dragging_hitbox_parent = parent_bp
+                        self._resize_edge = edge
+                        self._drag_start_pos = world_pos
+                        self._drag_start_hitbox_pos = Vec2(hitbox.position.x, hitbox.position.y)
+                        self._drag_start_hitbox_size = Vec2(hitbox.size.x, hitbox.size.y)
+                        self._selected_hitbox = hitbox
+                        self._signal_hub.notify_hitbox_selected(hitbox)
+                    else:
+                        # Start dragging hitbox
+                        self._dragging_hitbox = hitbox
+                        self._dragging_hitbox_parent = parent_bp
+                        self._resize_edge = None
+                        self._drag_start_pos = world_pos
+                        self._drag_start_hitbox_pos = Vec2(hitbox.position.x, hitbox.position.y)
+                        self._selected_hitbox = hitbox
+                        self._signal_hub.notify_hitbox_selected(hitbox)
+                    self.update()
+                    return
+                else:
+                    # Deselect hitbox
+                    self._selected_hitbox = None
+                    self._signal_hub.notify_hitbox_selected(None)
+                    self.update()
+            
+            # Normal body part interaction
             clicked_bp = self._get_bodypart_at(world_pos)
             
             if clicked_bp:
@@ -316,13 +474,94 @@ class ViewportWidget(QWidget):
     
     def mouseMoveEvent(self, event):
         """Handle mouse move."""
-        if self._is_dragging and self._selected_bodypart:
+        # Update cursor based on hover state (only when not dragging)
+        if not self._dragging_hitbox and not self._is_dragging and not self._is_panning:
+            self._update_cursor_for_hover(QPointF(event.pos()))
+        
+        if self._dragging_hitbox:
+            # Drag or resize hitbox
+            world_pos = self._screen_to_world(QPointF(event.pos()))
+            delta = world_pos - self._drag_start_pos
+            
+            if self._resize_edge:
+                # Resize hitbox
+                new_x = self._drag_start_hitbox_pos.x
+                new_y = self._drag_start_hitbox_pos.y
+                new_w = self._drag_start_hitbox_size.x
+                new_h = self._drag_start_hitbox_size.y
+                
+                # Apply delta based on edge
+                if self._resize_edge in ['left', 'tl', 'bl']:
+                    new_x += delta.x()
+                    new_w -= delta.x()
+                if self._resize_edge in ['right', 'tr', 'br']:
+                    new_w += delta.x()
+                if self._resize_edge in ['top', 'tl', 'tr']:
+                    new_y += delta.y()
+                    new_h -= delta.y()
+                if self._resize_edge in ['bottom', 'bl', 'br']:
+                    new_h += delta.y()
+                
+                # Round to pixels
+                new_x = round(new_x)
+                new_y = round(new_y)
+                new_w = round(new_w)
+                new_h = round(new_h)
+                
+                # Apply grid snap
+                if self._snap_value > 0:
+                    new_x = self._snap_to_grid(new_x)
+                    new_y = self._snap_to_grid(new_y)
+                    new_w = self._snap_to_grid(new_w)
+                    new_h = self._snap_to_grid(new_h)
+                
+                # Minimum size
+                new_w = max(1, new_w)
+                new_h = max(1, new_h)
+                
+                self._dragging_hitbox.position.x = new_x
+                self._dragging_hitbox.position.y = new_y
+                self._dragging_hitbox.size.x = new_w
+                self._dragging_hitbox.size.y = new_h
+            else:
+                # Move hitbox
+                new_x = self._drag_start_hitbox_pos.x + delta.x()
+                new_y = self._drag_start_hitbox_pos.y + delta.y()
+                
+                # Round to pixels
+                new_x = round(new_x)
+                new_y = round(new_y)
+                
+                # Apply grid snap
+                if self._snap_value > 0:
+                    new_x = self._snap_to_grid(new_x)
+                    new_y = self._snap_to_grid(new_y)
+                
+                self._dragging_hitbox.position.x = new_x
+                self._dragging_hitbox.position.y = new_y
+            
+            self._signal_hub.notify_hitbox_modified(self._dragging_hitbox)
+            self.update()
+        
+        elif self._is_dragging and self._selected_bodypart:
             # Drag body part
             world_pos = self._screen_to_world(QPointF(event.pos()))
             delta = world_pos - self._drag_start_pos
             
-            self._selected_bodypart.position.x = self._drag_start_bp_pos.x + delta.x()
-            self._selected_bodypart.position.y = self._drag_start_bp_pos.y + delta.y()
+            new_x = self._drag_start_bp_pos.x + delta.x()
+            new_y = self._drag_start_bp_pos.y + delta.y()
+            
+            # Always round to pixel precision
+            new_x = round(new_x)
+            new_y = round(new_y)
+            
+            # Apply grid snapping if snap value is set (always active, no Ctrl needed)
+            if self._snap_value > 0:
+                new_x = self._snap_to_grid(new_x)
+                new_y = self._snap_to_grid(new_y)
+            
+            self._selected_bodypart.position.x = new_x
+            self._selected_bodypart.position.y = new_y
             
             self._signal_hub.notify_bodypart_modified(self._selected_bodypart)
             self.update()
@@ -342,6 +581,8 @@ class ViewportWidget(QWidget):
         """Handle mouse release."""
         if event.button() == Qt.LeftButton:
             self._is_dragging = False
+            self._dragging_hitbox = None
+            self._resize_edge = None
         elif event.button() == Qt.MiddleButton or event.button() == Qt.RightButton:
             self._is_panning = False
     
@@ -362,3 +603,56 @@ class ViewportWidget(QWidget):
     def _on_bodypart_modified(self, bodypart):
         """Handle external body part modification."""
         self.update()
+    
+    def _snap_to_grid(self, value: float) -> float:
+        """Snap a value to the current grid if snap is enabled."""
+        if self._snap_value <= 0:
+            return value
+        return round(value / self._snap_value) * self._snap_value
+    
+    def _on_snap_value_changed(self, snap_value: float):
+        """Handle snap value change from signal hub."""
+        self._snap_value = snap_value
+    
+    def _on_hitbox_edit_mode_changed(self, enabled: bool):
+        """Handle hitbox edit mode toggle."""
+        self._hitbox_edit_mode = enabled
+        self.update()
+    
+    def _on_hitbox_selected(self, hitbox):
+        """Handle external hitbox selection."""
+        if hitbox != self._selected_hitbox:
+            self._selected_hitbox = hitbox
+            self.update()
+    
+    def _update_cursor_for_hover(self, screen_pos: QPointF):
+        """Update cursor based on what's under the mouse."""
+        if not self._hitbox_edit_mode or not self._entity:
+            self.setCursor(Qt.ArrowCursor)
+            return
+        
+        world_pos = self._screen_to_world(screen_pos)
+        hitbox, parent_bp = self._get_hitbox_at(world_pos)
+        
+        if hitbox:
+            edge = self._get_hitbox_edge(hitbox, parent_bp, world_pos)
+            
+            if edge:
+                # Set resize cursor based on edge
+                cursor_map = {
+                    'tl': Qt.SizeFDiagCursor,  # top-left: diagonal ↖↘
+                    'tr': Qt.SizeBDiagCursor,  # top-right: diagonal ↗↙
+                    'bl': Qt.SizeBDiagCursor,  # bottom-left: diagonal ↗↙
+                    'br': Qt.SizeFDiagCursor,  # bottom-right: diagonal ↖↘
+                    'left': Qt.SizeHorCursor,  # left: horizontal ↔
+                    'right': Qt.SizeHorCursor, # right: horizontal ↔
+                    'top': Qt.SizeVerCursor,   # top: vertical ↕
+                    'bottom': Qt.SizeVerCursor # bottom: vertical ↕
+                }
+                self.setCursor(cursor_map.get(edge, Qt.ArrowCursor))
+            else:
+                # Over hitbox but not near edge - show move cursor
+                self.setCursor(Qt.SizeAllCursor)
+        else:
+            # Not over any hitbox
+            self.setCursor(Qt.ArrowCursor)

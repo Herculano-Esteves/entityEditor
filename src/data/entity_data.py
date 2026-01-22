@@ -82,13 +82,20 @@ class UVRect:
 @dataclass
 class Hitbox:
     """
-    Rectangular hitbox for collision detection or interaction areas.
-    Can be attached to an entity or specific body part.
+    Represents a hitbox (collision, damage, trigger, etc.).
+    
+    Attributes:
+        name: Identifier for this hitbox
+        hitbox_type: Type of hitbox ("collision", "damage", "trigger")
+        position: Position relative to parent (body part or entity)
+        size: Dimensions of the hitbox
+        enabled: Whether this hitbox is active/visible
     """
     name: str = "Hitbox"
     position: Vec2 = field(default_factory=Vec2)
     size: Vec2 = field(default_factory=lambda: Vec2(32.0, 32.0))
     hitbox_type: str = "collision"  # e.g., "collision", "damage", "trigger"
+    enabled: bool = True
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -96,7 +103,8 @@ class Hitbox:
             "name": self.name,
             "position": self.position.to_dict(),
             "size": self.size.to_dict(),
-            "hitbox_type": self.hitbox_type
+            "hitbox_type": self.hitbox_type,
+            "enabled": self.enabled
         }
     
     @classmethod
@@ -106,7 +114,8 @@ class Hitbox:
             name=data.get("name", "Hitbox"),
             position=Vec2.from_dict(data.get("position", {})),
             size=Vec2.from_dict(data.get("size", {"x": 32.0, "y": 32.0})),
-            hitbox_type=data.get("hitbox_type", "collision")
+            hitbox_type=data.get("hitbox_type", "collision"),
+            enabled=data.get("enabled", True)  # Default to True for backwards compatibility
         )
 
 
@@ -121,7 +130,18 @@ class BodyPart:
     size: Vec2 = field(default_factory=lambda: Vec2(64.0, 64.0))
     texture_path: str = ""  # Relative or absolute path to texture file
     uv_rect: UVRect = field(default_factory=UVRect)
+    
+    # UV flipping (for mirroring sprites)
+    flip_x: bool = False  # Flip texture horizontally
+    flip_y: bool = False  # Flip texture vertically
+    
     hitboxes: List[Hitbox] = field(default_factory=list)
+    
+    # UV tile reference (optional)
+    uv_tile_id: Optional[str] = None  # Reference to a UVTile for easy reuse
+    
+    # Pixel scale multiplier (for scaling sprites)
+    pixel_scale: int = 1  # 1 = 1:1, 2 = 2x2 per pixel, etc.
     
     # Visual properties
     rotation: float = 0.0  # Rotation in degrees
@@ -136,7 +156,11 @@ class BodyPart:
             "size": self.size.to_dict(),
             "texture_path": self.texture_path,
             "uv_rect": self.uv_rect.to_dict(),
+            "flip_x": self.flip_x,
+            "flip_y": self.flip_y,
             "hitboxes": [hb.to_dict() for hb in self.hitboxes],
+            "uv_tile_id": self.uv_tile_id,
+            "pixel_scale": self.pixel_scale,
             "rotation": self.rotation,
             "z_order": self.z_order,
             "visible": self.visible
@@ -151,7 +175,11 @@ class BodyPart:
             size=Vec2.from_dict(data.get("size", {"x": 64.0, "y": 64.0})),
             texture_path=data.get("texture_path", ""),
             uv_rect=UVRect.from_dict(data.get("uv_rect", {})),
+            flip_x=data.get("flip_x", False),
+            flip_y=data.get("flip_y", False),
             hitboxes=[Hitbox.from_dict(hb) for hb in data.get("hitboxes", [])],
+            uv_tile_id=data.get("uv_tile_id"),
+            pixel_scale=data.get("pixel_scale", 1),
             rotation=data.get("rotation", 0.0),
             z_order=data.get("z_order", 0),
             visible=data.get("visible", True)
