@@ -28,6 +28,8 @@ class SignalHub(QObject):
     bodypart_removed = Signal(object)    # Emitted when a body part is removed (passes BodyPart)
     bodypart_modified = Signal(object)   # Emitted when a body part is modified (passes BodyPart)
     bodypart_reordered = Signal()        # Emitted when body parts are reordered
+    bodypart_show_above_changed = Signal(bool)  # Emitted when show-above-while-editing toggles
+    bodyparts_selection_changed = Signal(list)  # Emitted when multi-selection changes (passes List[BodyPart])
     
     # Hitbox signals
     hitbox_selected = Signal(object)     # Emitted when a hitbox is selected (passes Hitbox or None)
@@ -49,6 +51,9 @@ class SignalHub(QObject):
     viewport_selection_changed = Signal(object)  # Emitted when selection changes in viewport
     viewport_transform_changed = Signal()        # Emitted when viewport zoom/pan changes
     snap_value_changed = Signal(float)           # Emitted when grid snap value changes
+    
+    # History signals
+    undo_redo_state_changed = Signal(bool, bool, str, str)  # (can_undo, can_redo, undo_desc, redo_desc)
     
     def __init__(self):
         super().__init__()
@@ -88,6 +93,14 @@ class SignalHub(QObject):
         """Notify that body parts have been reordered."""
         self.bodypart_reordered.emit()
         self.entity_modified.emit()
+    
+    def notify_bodypart_show_above_changed(self, enabled: bool):
+        """Notify that show-above-while-editing has been toggled."""
+        self.bodypart_show_above_changed.emit(enabled)
+    
+    def notify_bodyparts_selection_changed(self, selected_bodyparts: list):
+        """Notify that multiple body parts selection has changed."""
+        self.bodyparts_selection_changed.emit(selected_bodyparts)
     
     def notify_hitbox_selected(self, hitbox):
         """Notify that a hitbox has been selected."""
@@ -137,6 +150,12 @@ class SignalHub(QObject):
     def notify_viewport_selection_changed(self, selected_object):
         """Notify that viewport selection has changed."""
         self.viewport_selection_changed.emit(selected_object)
+    
+    def notify_undo_redo_state_changed(self, can_undo: bool, can_redo: bool, 
+                                       undo_desc: str = None, redo_desc: str = None):
+        """Notify that undo/redo state has changed."""
+        self.undo_redo_state_changed.emit(can_undo, can_redo, 
+                                         undo_desc or "", redo_desc or "")
 
 
 # Global signal hub instance

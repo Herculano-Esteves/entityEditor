@@ -82,41 +82,74 @@ class UVRect:
 @dataclass
 class Hitbox:
     """
-    Represents a hitbox (collision, damage, trigger, etc.).
+    Hitbox with integer pixel precision.
+    
+    For pixel-based 2D games, all positions and sizes must be exact integers.
+    No floats, no sub-pixel positioning.
     
     Attributes:
         name: Identifier for this hitbox
+        x: X position in pixels (integer) relative to parent
+        y: Y position in pixels (integer) relative to parent
+        width: Width in pixels (integer)
+        height: Height in pixels (integer)
         hitbox_type: Type of hitbox ("collision", "damage", "trigger")
-        position: Position relative to parent (body part or entity)
-        size: Dimensions of the hitbox
         enabled: Whether this hitbox is active/visible
     """
     name: str = "Hitbox"
-    position: Vec2 = field(default_factory=Vec2)
-    size: Vec2 = field(default_factory=lambda: Vec2(32.0, 32.0))
-    hitbox_type: str = "collision"  # e.g., "collision", "damage", "trigger"
+    x: int = 0           # Position X in pixels (integer only)
+    y: int = 0           # Position Y in pixels (integer only)
+    width: int = 32      # Width in pixels (integer only)
+    height: int = 32     # Height in pixels (integer only)
+    hitbox_type: str = "collision"  # "collision", "damage", "trigger"
     enabled: bool = True
     
+    def __post_init__(self):
+        """Enforce integer types after initialization."""
+        self.x = int(self.x)
+        self.y = int(self.y)
+        self.width = int(self.width)
+        self.height = int(self.height)
+    
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization."""
+        """Convert to dictionary for serialization (ensures integers)."""
         return {
             "name": self.name,
-            "position": self.position.to_dict(),
-            "size": self.size.to_dict(),
+            "x": int(self.x),
+            "y": int(self.y),
+            "width": int(self.width),
+            "height": int(self.height),
             "hitbox_type": self.hitbox_type,
             "enabled": self.enabled
         }
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Hitbox':
-        """Create from dictionary."""
-        return cls(
-            name=data.get("name", "Hitbox"),
-            position=Vec2.from_dict(data.get("position", {})),
-            size=Vec2.from_dict(data.get("size", {"x": 32.0, "y": 32.0})),
-            hitbox_type=data.get("hitbox_type", "collision"),
-            enabled=data.get("enabled", True)  # Default to True for backwards compatibility
-        )
+        """Create from dictionary (with migration from old Vec2 format)."""
+        # Try new integer format first
+        if "x" in data and "y" in data:
+            return cls(
+                name=data.get("name", "Hitbox"),
+                x=int(data.get("x", 0)),
+                y=int(data.get("y", 0)),
+                width=int(data.get("width", 32)),
+                height=int(data.get("height", 32)),
+                hitbox_type=data.get("hitbox_type", "collision"),
+                enabled=data.get("enabled", True)
+            )
+        # Migrate from old Vec2 format
+        else:
+            position = data.get("position", {})
+            size = data.get("size", {"x": 32.0, "y": 32.0})
+            return cls(
+                name=data.get("name", "Hitbox"),
+                x=int(position.get("x", 0)),
+                y=int(position.get("y", 0)),
+                width=int(size.get("x", 32)),
+                height=int(size.get("y", 32)),
+                hitbox_type=data.get("hitbox_type", "collision"),
+                enabled=data.get("enabled", True)
+            )
 
 
 @dataclass

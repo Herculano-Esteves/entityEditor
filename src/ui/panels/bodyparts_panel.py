@@ -17,7 +17,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.data import Entity, BodyPart, Vec2, UVRect
-from src.core import get_signal_hub
+from src.core import get_signal_hub, AddBodyPartCommand, RemoveBodyPartCommand, MoveBodyPartCommand, ModifyBodyPartCommand
 
 
 class BodyPartsPanel(QWidget):
@@ -27,8 +27,14 @@ class BodyPartsPanel(QWidget):
         super().__init__(parent)
         
         self._entity = None
-        self._selected_bodypart = None
+        self._selected_bodypart = None  # Primary selection (for properties panel)
+        self._selected_bodyparts = []   # Multi-selection list
         self._signal_hub = get_signal_hub()
+        self._history_manager = None  # Will be set via signal hub when entity loads
+        
+        # Track property state for undo
+        self._property_edit_old_state = None
+        self._updating_ui = False  # Flag to prevent change tracking during programmatic updates
         
         self._setup_ui()
         self._connect_signals()
@@ -42,7 +48,9 @@ class BodyPartsPanel(QWidget):
         layout.addWidget(list_label)
         
         self._bodyparts_list = QListWidget()
+        self._bodyparts_list.setSelectionMode(QListWidget.ExtendedSelection)  # Enable multi-select
         self._bodyparts_list.currentItemChanged.connect(self._on_selection_changed)
+        self._bodyparts_list.itemSelectionChanged.connect(self._on_multi_selection_changed)
         layout.addWidget(self._bodyparts_list)
         
         # Buttons
@@ -78,11 +86,13 @@ class BodyPartsPanel(QWidget):
         self._pos_x_spin = QSpinBox()
         self._pos_x_spin.setRange(-10000, 10000)
         self._pos_x_spin.valueChanged.connect(self._on_property_changed)
+        self._pos_x_spin.editingFinished.connect(self._on_editing_finished)
         props_layout.addRow("Position X (px):", self._pos_x_spin)
         
         self._pos_y_spin = QSpinBox()
         self._pos_y_spin.setRange(-10000, 10000)
         self._pos_y_spin.valueChanged.connect(self._on_property_changed)
+        self._pos_y_spin.editingFinished.connect(self._on_editing_finished)
         props_layout.addRow("Position Y (px):", self._pos_y_spin)
         
         # Size
@@ -90,12 +100,14 @@ class BodyPartsPanel(QWidget):
         self._size_x_spin.setRange(1, 10000)
         self._size_x_spin.setValue(64)
         self._size_x_spin.valueChanged.connect(self._on_property_changed)
+        self._size_x_spin.editingFinished.connect(self._on_editing_finished)
         props_layout.addRow("Width (px):", self._size_x_spin)
         
         self._size_y_spin = QSpinBox()
         self._size_y_spin.setRange(1, 10000)
         self._size_y_spin.setValue(64)
         self._size_y_spin.valueChanged.connect(self._on_property_changed)
+        self._size_y_spin.editingFinished.connect(self._on_editing_finished)
         props_layout.addRow("Height (px):", self._size_y_spin)
         
         # Pixel scale
@@ -104,6 +116,7 @@ class BodyPartsPanel(QWidget):
         self._pixel_scale_spin.setValue(1)
         self._pixel_scale_spin.setSuffix("x")
         self._pixel_scale_spin.valueChanged.connect(self._on_property_changed)
+        self._pixel_scale_spin.editingFinished.connect(self._on_editing_finished)
         self._pixel_scale_spin.setToolTip("Sprite scale multiplier (1x = 1:1 pixels, 2x = each pixel is 2x2, etc.)")
         props_layout.addRow("Pixel Scale:", self._pixel_scale_spin)
         
@@ -111,7 +124,15 @@ class BodyPartsPanel(QWidget):
         self._z_order_spin = QSpinBox()
         self._z_order_spin.setRange(-100, 100)
         self._z_order_spin.valueChanged.connect(self._on_property_changed)
+        self._z_order_spin.editingFinished.connect(self._on_editing_finished)
         props_layout.addRow("Z-Order:", self._z_order_spin)
+        
+        # Show above while editing checkbox
+        self._show_above_check = QCheckBox("Show Above While Editing")
+        self._show_above_check.setChecked(True)  # Enabled by default
+        self._show_above_check.toggled.connect(self._on_show_above_changed)
+        self._show_above_check.setToolTip("Temporarily show this bodypart above all others while editing (makes hitbox editing easier)")
+        props_layout.addRow("", self._show_above_check)
         
         # Texture
         texture_layout = QHBoxLayout()
@@ -127,7 +148,6 @@ class BodyPartsPanel(QWidget):
         
         # Flip UV (for mirroring)
         flip_layout = QHBoxLayout()
-        from PySide6.QtWidgets import QCheckBox
         self._flip_x_check = QCheckBox("Flip X")
         self._flip_x_check.toggled.connect(self._on_property_changed)
         self._flip_x_check.setToolTip("Mirror texture horizontally (for left/right variants)")
@@ -145,6 +165,7 @@ class BodyPartsPanel(QWidget):
         self._rotation_spin.setRange(-360, 360)
         self._rotation_spin.setSuffix("°")
         self._rotation_spin.valueChanged.connect(self._on_property_changed)
+        self._rotation_spin.editingFinished.connect(self._on_editing_finished)
         self._rotation_spin.setToolTip("Rotation in degrees")
         props_layout.addRow("Rotation:", self._rotation_spin)
         
@@ -170,10 +191,22 @@ class BodyPartsPanel(QWidget):
         """Set the entity to edit."""
         self._entity = entity
         self._selected_bodypart = None
+        
+        # Get history manager from parent window
+        parent_window = self.window()
+        if hasattr(parent_window, 'get_history_manager'):
+            self._history_manager = parent_window.get_history_manager()
+        
         self._refresh_list()
     
     def _refresh_list(self):
-        """Refresh the body parts list."""
+        """Refresh the body parts list while preserving selection."""
+        # Store currently selected bodypart
+        selected_bp = None
+        current_item = self._bodyparts_list.currentItem()
+        if current_item:
+            selected_bp = current_item.data(Qt.UserRole)
+        
         self._bodyparts_list.clear()
         
         if not self._entity:
@@ -207,17 +240,34 @@ class BodyPartsPanel(QWidget):
             
             item.setSizeHint(widget.sizeHint())
             self._bodyparts_list.setItemWidget(item, widget)
+        
+        # Restore selection
+        if selected_bp:
+            for i in range(self._bodyparts_list.count()):
+                item = self._bodyparts_list.item(i)
+                if item.data(Qt.UserRole) == selected_bp:
+                    self._bodyparts_list.setCurrentItem(item)
+                    break
     
     def _on_selection_changed(self, current, previous):
-        """Handle selection change in list."""
+        """Handle single selection change (for properties panel)."""
         if current:
-            bp = current.data(Qt.UserRole)
-            self._selected_bodypart = bp
+            bodypart = current.data(Qt.UserRole)
+            self._selected_bodypart = bodypart
             self._update_properties()
-            self._signal_hub.notify_bodypart_selected(bp)
+            self._signal_hub.notify_bodypart_selected(bodypart)
         else:
             self._selected_bodypart = None
+            self._update_properties()
             self._signal_hub.notify_bodypart_selected(None)
+    
+    def _on_multi_selection_changed(self):
+        """Handle multi-selection change (for viewport)."""
+        selected_items = self._bodyparts_list.selectedItems()
+        self._selected_bodyparts = [item.data(Qt.UserRole) for item in selected_items]
+        
+        # Emit multi-selection signal for viewport
+        self._signal_hub.notify_bodyparts_selection_changed(self._selected_bodyparts)
         
         self._update_properties_enabled()
     
@@ -257,8 +307,16 @@ class BodyPartsPanel(QWidget):
             size=Vec2(64, 64),
             z_order=0  # Always start at 0
         )
-        self._entity.add_body_part(bp)
-        self._signal_hub.notify_bodypart_added(bp)
+        
+        # Use command if history manager available
+        if self._history_manager:
+            cmd = AddBodyPartCommand(bp)
+            self._history_manager.execute(cmd)
+        else:
+            # Fallback to direct modification
+            self._entity.add_body_part(bp)
+            self._signal_hub.notify_bodypart_added(bp)
+        
         self._refresh_list()
         
         # Select the new body part
@@ -269,8 +327,15 @@ class BodyPartsPanel(QWidget):
         if not self._entity or not self._selected_bodypart:
             return
         
-        self._entity.remove_body_part(self._selected_bodypart)
-        self._signal_hub.notify_bodypart_removed(self._selected_bodypart)
+        # Use command if history manager available
+        if self._history_manager:
+            cmd = RemoveBodyPartCommand(self._selected_bodypart)
+            self._history_manager.execute(cmd)
+        else:
+            # Fallback to direct modification
+            self._entity.remove_body_part(self._selected_bodypart)
+            self._signal_hub.notify_bodypart_removed(self._selected_bodypart)
+        
         self._refresh_list()
     
     def _on_rename_bodypart(self):
@@ -308,8 +373,15 @@ class BodyPartsPanel(QWidget):
         bp_copy.position.x += 10
         bp_copy.position.y += 10
         
-        self._entity.add_body_part(bp_copy)
-        self._signal_hub.notify_bodypart_added(bp_copy)
+        # Use command if history manager available
+        if self._history_manager:
+            cmd = AddBodyPartCommand(bp_copy)
+            self._history_manager.execute(cmd)
+        else:
+            # Fallback to direct modification
+            self._entity.add_body_part(bp_copy)
+            self._signal_hub.notify_bodypart_added(bp_copy)
+        
         self._refresh_list()
         
         # Select the new body part
@@ -346,6 +418,10 @@ class BodyPartsPanel(QWidget):
         if not self._selected_bodypart:
             return
         
+        # Don't process if we're programmatically updating the UI
+        if hasattr(self, '_updating_ui') and self._updating_ui:
+            return
+        
         # Update body part from UI (skip name, it has its own handler)
         self._selected_bodypart.position.x = self._pos_x_spin.value()
         self._selected_bodypart.position.y = self._pos_y_spin.value()
@@ -358,8 +434,13 @@ class BodyPartsPanel(QWidget):
         self._selected_bodypart.flip_y = self._flip_y_check.isChecked()
         self._selected_bodypart.texture_path = self._texture_edit.text()
         
-        # Notify modification
+        # Notify modification (for viewport refresh)
         self._signal_hub.notify_bodypart_modified(self._selected_bodypart)
+    
+    def _on_editing_finished(self):
+        """Called when editing is finished (Enter pressed or focus lost) - finalize undo snapshot."""
+        if self._history_manager:
+            self._history_manager.end_change()
     
     def _on_browse_texture(self):
         """Browse for texture file."""
@@ -486,3 +567,7 @@ class BodyPartsPanel(QWidget):
         """Handle external modification."""
         if bodypart == self._selected_bodypart:
             self._update_properties()
+    
+    def _on_show_above_changed(self, checked: bool):
+        """Handle show-above-while-editing checkbox toggle."""
+        self._signal_hub.notify_bodypart_show_above_changed(checked)

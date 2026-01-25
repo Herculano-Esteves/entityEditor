@@ -6,7 +6,7 @@ Panel for managing and editing hitboxes.
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QGroupBox, QFormLayout, QLineEdit, QPushButton, QDoubleSpinBox,
+    QGroupBox, QFormLayout, QLineEdit, QPushButton, QSpinBox,
     QComboBox, QCheckBox, QLabel
 )
 from PySide6.QtCore import Qt
@@ -16,7 +16,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.data import Entity, Hitbox, Vec2
-from src.core import get_signal_hub
+from src.core import get_signal_hub, AddHitboxCommand, RemoveHitboxCommand, ModifyHitboxCommand
 
 
 class HitboxPanel(QWidget):
@@ -31,6 +31,11 @@ class HitboxPanel(QWidget):
         self._selected_bodypart = None
         self._selected_hitbox = None
         self._signal_hub = get_signal_hub()
+        self._history_manager = None  # Will be set when entity loads
+        
+        # Track property state for undo
+        self._property_edit_old_state = None
+        self._updating_ui = False  # Flag to prevent change tracking during programmatic updates
         
         self._setup_ui()
         self._connect_signals()
@@ -54,7 +59,7 @@ class HitboxPanel(QWidget):
         # Edit mode toggle
         self._edit_mode_check = QCheckBox("Edit Hitboxes")
         self._edit_mode_check.toggled.connect(self._on_edit_mode_changed)
-        self._edit_mode_check.setToolTip("Enable hitbox editing mode\n(Shortcut: Hold Shift)")
+        self._edit_mode_check.setToolTip("Enable hitbox editing mode (persistent toggle)\nAllows moving/resizing hitboxes in viewport\n(Shortcut: Hold Shift)")
         buttons_layout.addWidget(self._edit_mode_check)
         
         buttons_layout.addStretch()
@@ -79,38 +84,50 @@ class HitboxPanel(QWidget):
         
         # Name
         self._name_edit = QLineEdit()
-        self._name_edit.editingFinished.connect(self._on_name_changed)  # Only when done editing
+        self._name_edit.textChanged.connect(self._on_property_changed)
+        self._name_edit.editingFinished.connect(self._on_editing_finished)
+        self._name_edit.installEventFilter(self)  # Capture focus events for undo tracking
         props_layout.addRow("Name:", self._name_edit)
         
         # Type
         self._type_combo = QComboBox()
         self._type_combo.addItems(self.HITBOX_TYPES)
         self._type_combo.currentTextChanged.connect(self._on_property_changed)
+        self._type_combo.currentTextChanged.connect(self._on_editing_finished)  # Combo changes are complete immediately
+        self._type_combo.installEventFilter(self)  # Capture focus events for undo tracking
         props_layout.addRow("Type:", self._type_combo)
         
-        # Position
-        self._pos_x_spin = QDoubleSpinBox()
+        # Position (integers only)
+        self._pos_x_spin = QSpinBox()
         self._pos_x_spin.setRange(-10000, 10000)
         self._pos_x_spin.valueChanged.connect(self._on_property_changed)
-        props_layout.addRow("Position X:", self._pos_x_spin)
+        self._pos_x_spin.editingFinished.connect(self._on_editing_finished)
+        self._pos_x_spin.installEventFilter(self)  # Capture focus events for undo tracking
+        props_layout.addRow("Position X (px):", self._pos_x_spin)
         
-        self._pos_y_spin = QDoubleSpinBox()
+        self._pos_y_spin = QSpinBox()
         self._pos_y_spin.setRange(-10000, 10000)
         self._pos_y_spin.valueChanged.connect(self._on_property_changed)
-        props_layout.addRow("Position Y:", self._pos_y_spin)
+        self._pos_y_spin.editingFinished.connect(self._on_editing_finished)
+        self._pos_y_spin.installEventFilter(self)  # Capture focus events for undo tracking
+        props_layout.addRow("Position Y (px):", self._pos_y_spin)
         
-        # Size
-        self._size_x_spin = QDoubleSpinBox()
-        self._size_x_spin.setRange(0.1, 10000)
+        # Size (integers only)
+        self._size_x_spin = QSpinBox()
+        self._size_x_spin.setRange(1, 10000)
         self._size_x_spin.setValue(32)
         self._size_x_spin.valueChanged.connect(self._on_property_changed)
-        props_layout.addRow("Width:", self._size_x_spin)
+        self._size_x_spin.editingFinished.connect(self._on_editing_finished)
+        self._size_x_spin.installEventFilter(self)  # Capture focus events for undo tracking
+        props_layout.addRow("Width (px):", self._size_x_spin)
         
-        self._size_y_spin = QDoubleSpinBox()
-        self._size_y_spin.setRange(0.1, 10000)
+        self._size_y_spin = QSpinBox()
+        self._size_y_spin.setRange(1, 10000)
         self._size_y_spin.setValue(32)
         self._size_y_spin.valueChanged.connect(self._on_property_changed)
-        props_layout.addRow("Height:", self._size_y_spin)
+        self._size_y_spin.editingFinished.connect(self._on_editing_finished)
+        self._size_y_spin.installEventFilter(self)  # Capture focus events for undo tracking
+        props_layout.addRow("Height (px):", self._size_y_spin)
         
         props_group.setLayout(props_layout)
         layout.addWidget(props_group)
@@ -124,12 +141,19 @@ class HitboxPanel(QWidget):
         self._signal_hub.entity_loaded.connect(self.set_entity)
         self._signal_hub.bodypart_selected.connect(self._on_bodypart_selected)
         self._signal_hub.bodypart_modified.connect(lambda _: self._refresh_list())
+        self._signal_hub.hitbox_modified.connect(self._on_external_modification)
     
     def set_entity(self, entity: Entity):
         """Set the entity to edit."""
         self._entity = entity
         self._selected_bodypart = None
         self._selected_hitbox = None
+        
+        # Get history manager from parent window
+        parent_window = self.window()
+        if hasattr(parent_window, 'get_history_manager'):
+            self._history_manager = parent_window.get_history_manager()
+        
         self._refresh_list()
     
     def _on_bodypart_selected(self, bodypart):
@@ -139,18 +163,18 @@ class HitboxPanel(QWidget):
         self._refresh_list()
     
     def _refresh_list(self):
-        """Refresh the hitbox list."""
+        """Refresh the hitbox list while preserving selection."""
+        # Store currently selected hitbox
+        selected_hb = None
+        current_item = self._hitbox_list.currentItem()
+        if current_item:
+            selected_hb = current_item.data(Qt.UserRole)
+        
         self._hitbox_list.clear()
         
         if not self._selected_bodypart:
-            # Disable edit mode when no body part selected
-            self._edit_mode_check.setEnabled(False)
-            if self._edit_mode_check.isChecked():
-                self._edit_mode_check.setChecked(False)
+            # No body part selected - list is empty but edit mode can stay active
             return
-        
-        # Enable edit mode when body part is selected
-        self._edit_mode_check.setEnabled(True)
         
         self._add_btn.setEnabled(True)
         
@@ -183,6 +207,14 @@ class HitboxPanel(QWidget):
             
             item.setSizeHint(widget.sizeHint())
             self._hitbox_list.setItemWidget(item, widget)
+        
+        # Restore selection
+        if selected_hb:
+            for i in range(self._hitbox_list.count()):
+                item = self._hitbox_list.item(i)
+                if item.data(Qt.UserRole) == selected_hb:
+                    self._hitbox_list.setCurrentItem(item)
+                    break
     
     def _on_selection_changed(self, current, previous):
         """Handle selection change in list."""
@@ -203,18 +235,28 @@ class HitboxPanel(QWidget):
         
         count = len(self._selected_bodypart.hitboxes)
         
-        # Default hitbox size matches body part's rendered size
-        default_w = self._selected_bodypart.size.x * self._selected_bodypart.pixel_scale
-        default_h = self._selected_bodypart.size.y * self._selected_bodypart.pixel_scale
+        # Default hitbox size matches body part's rendered size (in pixels, as integers)
+        default_w = int(self._selected_bodypart.size.x * self._selected_bodypart.pixel_scale)
+        default_h = int(self._selected_bodypart.size.y * self._selected_bodypart.pixel_scale)
         
         hitbox = Hitbox(
             name=f"Hitbox_{count}",
-            position=Vec2(0, 0),
-            size=Vec2(default_w, default_h),
+            x=0,  # Integer position
+            y=0,  # Integer position
+            width=default_w,   # Integer width
+            height=default_h,  # Integer height
             hitbox_type="collision"
         )
-        self._selected_bodypart.hitboxes.append(hitbox)
-        self._signal_hub.notify_hitbox_added(hitbox)
+        
+        # Use command if history manager available
+        if self._history_manager:
+            cmd = AddHitboxCommand(self._selected_bodypart, hitbox)
+            self._history_manager.execute(cmd)
+        else:
+            # Fallback to direct modification
+            self._selected_bodypart.hitboxes.append(hitbox)
+            self._signal_hub.notify_hitbox_added(hitbox)
+        
         self._refresh_list()
         
         # Select the new hitbox
@@ -245,8 +287,15 @@ class HitboxPanel(QWidget):
         hitbox_copy.position.x += 5
         hitbox_copy.position.y += 5
         
-        self._selected_bodypart.hitboxes.append(hitbox_copy)
-        self._signal_hub.notify_hitbox_added(hitbox_copy)
+        # Use command if history manager available
+        if self._history_manager:
+            cmd = AddHitboxCommand(self._selected_bodypart, hitbox_copy)
+            self._history_manager.execute(cmd)
+        else:
+            # Fallback to direct modification
+            self._selected_bodypart.hitboxes.append(hitbox_copy)
+            self._signal_hub.notify_hitbox_added(hitbox_copy)
+        
         self._refresh_list()
         
         # Select the new hitbox
@@ -268,8 +317,15 @@ class HitboxPanel(QWidget):
             return
         
         if self._selected_hitbox in self._selected_bodypart.hitboxes:
-            self._selected_bodypart.hitboxes.remove(self._selected_hitbox)
-            self._signal_hub.notify_hitbox_removed(self._selected_hitbox)
+            # Use command if history manager available
+            if self._history_manager:
+                cmd = RemoveHitboxCommand(self._selected_bodypart, self._selected_hitbox)
+                self._history_manager.execute(cmd)
+            else:
+                # Fallback to direct modification
+                self._selected_bodypart.hitboxes.remove(self._selected_hitbox)
+                self._signal_hub.notify_hitbox_removed(self._selected_hitbox)
+            
             self._refresh_list()
     
     def _on_name_changed(self):
@@ -297,20 +353,79 @@ class HitboxPanel(QWidget):
         # Notify modification
         self._signal_hub.notify_hitbox_modified(self._selected_hitbox)
     
+    def eventFilter(self, obj, event):
+        """Capture focus-in events to snapshot state before editing."""
+        from PySide6.QtCore import QEvent
+        
+        if event.type() == QEvent.FocusIn:
+            # Check if this is one of our property editors
+            if obj in [self._pos_x_spin, self._pos_y_spin, self._size_x_spin, 
+                      self._size_y_spin, self._name_edit, self._type_combo]:
+                self._on_property_focused()
+        return super().eventFilter(obj, event)
+    
+    def _on_property_focused(self):
+        """Snapshot hitbox state when user starts editing."""
+        if self._selected_hitbox and not self._property_edit_old_state and not self._updating_ui:
+            self._property_edit_old_state = {
+                'x': self._selected_hitbox.x,
+                'y': self._selected_hitbox.y,
+                'width': self._selected_hitbox.width,
+                'height': self._selected_hitbox.height,
+                'name': self._selected_hitbox.name,
+                'hitbox_type': self._selected_hitbox.hitbox_type,
+            }
+    
     def _on_property_changed(self):
-        """Handle property change."""
-        if not self._selected_hitbox:
+        """Handle valueChanged - apply for live preview, no undo yet.
+        
+        This updates the model immediately so the viewport shows changes in real-time.
+        The actual undo command is created later in _on_editing_finished().
+        """
+        if not self._selected_hitbox or self._updating_ui:
             return
         
-        # Update hitbox from UI (skip name, it has its own handler)
+        # Update model (for live preview in viewport)
+        self._selected_hitbox.name = self._name_edit.text()
         self._selected_hitbox.hitbox_type = self._type_combo.currentText()
-        self._selected_hitbox.position.x = self._pos_x_spin.value()
-        self._selected_hitbox.position.y = self._pos_y_spin.value()
-        self._selected_hitbox.size.x = self._size_x_spin.value()
-        self._selected_hitbox.size.y = self._size_y_spin.value()
+        self._selected_hitbox.x = self._pos_x_spin.value()
+        self._selected_hitbox.y = self._pos_y_spin.value()
+        self._selected_hitbox.width = self._size_x_spin.value()
+        self._selected_hitbox.height = self._size_y_spin.value()
         
-        # Notify modification
+        # Notify for viewport refresh
         self._signal_hub.notify_hitbox_modified(self._selected_hitbox)
+    
+    def _on_editing_finished(self):
+        """Create undo command when editing completes.
+        
+        Called when user presses Enter, tabs away, or changes combo box selection.
+        Creates a ModifyHitboxCommand with before/after state if anything changed.
+        """
+        if not self._selected_hitbox or not self._property_edit_old_state or self._updating_ui:
+            return
+        
+        # Capture final state
+        new_state = {
+            'x': self._selected_hitbox.x,
+            'y': self._selected_hitbox.y,
+            'width': self._selected_hitbox.width,
+            'height': self._selected_hitbox.height,
+            'name': self._selected_hitbox.name,
+            'hitbox_type': self._selected_hitbox.hitbox_type,
+        }
+        
+        # Only create command if something changed
+        if new_state != self._property_edit_old_state and self._history_manager:
+            cmd = ModifyHitboxCommand(
+                self._selected_hitbox,
+                self._property_edit_old_state,
+                new_state
+            )
+            self._history_manager.execute(cmd)
+        
+        # Clear tracking
+        self._property_edit_old_state = None
     
     def _update_properties(self):
         """Update properties from selected hitbox."""
@@ -327,10 +442,10 @@ class HitboxPanel(QWidget):
         
         self._name_edit.setText(self._selected_hitbox.name)
         self._type_combo.setCurrentText(self._selected_hitbox.hitbox_type)
-        self._pos_x_spin.setValue(self._selected_hitbox.position.x)
-        self._pos_y_spin.setValue(self._selected_hitbox.position.y)
-        self._size_x_spin.setValue(self._selected_hitbox.size.x)
-        self._size_y_spin.setValue(self._selected_hitbox.size.y)
+        self._pos_x_spin.setValue(self._selected_hitbox.x)
+        self._pos_y_spin.setValue(self._selected_hitbox.y)
+        self._size_x_spin.setValue(self._selected_hitbox.width)
+        self._size_y_spin.setValue(self._selected_hitbox.height)
         
         # Unblock signals
         self._name_edit.blockSignals(False)
@@ -352,3 +467,9 @@ class HitboxPanel(QWidget):
         self._size_y_spin.setEnabled(enabled)
         self._remove_btn.setEnabled(enabled)
         self._duplicate_btn.setEnabled(enabled)
+    
+    def _on_external_modification(self, hitbox):
+        """Handle external hitbox modification without refreshing the list."""
+        if hitbox == self._selected_hitbox:
+            self._property_edit_old_state = None  # Clear pending edit state (undo invalidates it)
+            self._update_properties()

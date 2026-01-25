@@ -6,7 +6,7 @@ supports selection, drag-and-drop positioning, and visual feedback.
 """
 
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QPointF, QRectF, Signal, QPoint
+from PySide6.QtCore import Qt, QPointF, QRectF, QRect, Signal, QPoint
 from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QPainterPath, QTransform
 from typing import Optional, List, Tuple
 import sys
@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from src.data import Entity, BodyPart, Hitbox, Vec2
 from src.rendering import get_texture_manager
-from src.core import get_signal_hub
+from src.core import get_signal_hub, MoveBodyPartCommand, MoveHitboxCommand
 
 
 class ViewportWidget(QWidget):
@@ -40,7 +40,8 @@ class ViewportWidget(QWidget):
         
         # State
         self._entity: Optional[Entity] = None
-        self._selected_bodypart: Optional[BodyPart] = None
+        self._selected_bodypart: Optional[BodyPart] = None  # Primary selection
+        self._selected_bodyparts: List[BodyPart] = []  # Multi-selection
         self._selected_hitbox: Optional[Hitbox] = None
         
         # View transform
@@ -52,9 +53,10 @@ class ViewportWidget(QWidget):
         self._is_dragging = False
         self._drag_start_pos = QPointF()
         self._drag_start_bp_pos = Vec2()
+        self._drag_start_positions = {}  # Dict[BodyPart, Vec2] for multi-selection drag
         self._is_panning = False
         self._pan_start_pos = QPointF()
-        
+        self._pan_start_view = QPointF()
         # Hitbox editing state
         self._hitbox_edit_mode = False
         self._dragging_hitbox = None
@@ -62,6 +64,14 @@ class ViewportWidget(QWidget):
         self._dragging_hitbox_parent = None
         self._resize_edge = None  # 'left', 'right', 'top', 'bottom', 'tl', 'tr', 'bl', 'br'
         self._drag_start_hitbox_size = Vec2()
+        
+        # Rectangle selection state
+        self._rect_selecting = False
+        self._rect_start_pos: Optional[QPointF] = None
+        self._rect_current_pos: Optional[QPointF] = None
+        
+        # Z-order override for editing
+        self._show_selected_above = True  # Show selected bodypart above others while editing
         
         # Display options
         self._show_grid = True
@@ -80,6 +90,7 @@ class ViewportWidget(QWidget):
         self._signal_hub = get_signal_hub()
         self._signal_hub.entity_loaded.connect(self.set_entity)
         self._signal_hub.bodypart_selected.connect(self._on_bodypart_selected)
+        self._signal_hub.bodyparts_selection_changed.connect(self._on_bodyparts_selection_changed)
         self._signal_hub.bodypart_modified.connect(self._on_bodypart_modified)
         self._signal_hub.bodypart_added.connect(lambda _: self.update())
         self._signal_hub.bodypart_removed.connect(lambda _: self.update())
@@ -87,12 +98,22 @@ class ViewportWidget(QWidget):
         self._signal_hub.snap_value_changed.connect(self._on_snap_value_changed)
         self._signal_hub.hitbox_edit_mode_changed.connect(self._on_hitbox_edit_mode_changed)
         self._signal_hub.hitbox_selected.connect(self._on_hitbox_selected)
+        self._signal_hub.hitbox_modified.connect(lambda _: self.update())  # Critical: repaint when hitbox modified from UI
+        self._signal_hub.bodypart_show_above_changed.connect(self._on_show_above_changed)
+        
+        # History manager (will be set when entity loads)
+        self._history_manager = None
     
     def set_entity(self, entity: Optional[Entity]):
         """Set the entity to display."""
         self._entity = entity
         self._selected_bodypart = None
         self._selected_hitbox = None
+        
+        # Get history manager from parent window
+        parent_window = self.window()
+        if hasattr(parent_window, 'get_history_manager'):
+            self._history_manager = parent_window.get_history_manager()
         
         # Center view on entity pivot
         if entity:
@@ -168,11 +189,16 @@ class ViewportWidget(QWidget):
                 continue
             
             for hitbox in bp.hitboxes:
-                # Calculate absolute hitbox position
-                x = bp.position.x + hitbox.position.x
-                y = bp.position.y + hitbox.position.y
+                # Skip disabled hitboxes
+                if not hitbox.enabled:
+                    continue
                 
-                if x <= world_pos.x() <= x + hitbox.size.x and y <= world_pos.y() <= y + hitbox.size.y:
+                # Calculate absolute hitbox position
+                # Hitbox uses integer pixel coordinates
+                x = int(bp.position.x + hitbox.x)
+                y = int(bp.position.y + hitbox.y)
+                
+                if x <= world_pos.x() <= x + hitbox.width and y <= world_pos.y() <= y + hitbox.height:
                     return hitbox, bp
         
         return None, None
@@ -182,10 +208,11 @@ class ViewportWidget(QWidget):
         grab_distance = 8 / self._zoom  # Pixels in world space
         
         # Calculate absolute hitbox position
-        x = parent_bp.position.x + hitbox.position.x
-        y = parent_bp.position.y + hitbox.position.y
-        w = hitbox.size.x
-        h = hitbox.size.y
+        # Hitbox uses integer pixel coordinates
+        x = int(parent_bp.position.x + hitbox.x)
+        y = int(parent_bp.position.y + hitbox.y)
+        w = hitbox.width
+        h = hitbox.height
         
         wx = world_pos.x()
         wy = world_pos.y()
@@ -240,6 +267,10 @@ class ViewportWidget(QWidget):
             # Draw entity
             if self._entity:
                 self._draw_entity(painter)
+                
+            # Draw selection rectangle
+            if self._rect_selecting and self._rect_start_pos and self._rect_current_pos:
+                self._draw_selection_rect(painter)
             
             painter.restore()
             
@@ -247,6 +278,70 @@ class ViewportWidget(QWidget):
             self._draw_ui_overlay(painter)
         finally:
             painter.end()
+
+    def _draw_selection_rect(self, painter: QPainter):
+        """Draw the selection rectangle."""
+        if not self._rect_start_pos or not self._rect_current_pos:
+            return
+            
+        # Define rectangle
+        top_left = QPointF(
+            min(self._rect_start_pos.x(), self._rect_current_pos.x()),
+            min(self._rect_start_pos.y(), self._rect_current_pos.y())
+        )
+        width = abs(self._rect_current_pos.x() - self._rect_start_pos.x())
+        height = abs(self._rect_current_pos.y() - self._rect_start_pos.y())
+        rect = QRectF(top_left.x(), top_left.y(), width, height)
+        
+        # Draw rectangle
+        color = QColor(100, 200, 255, 60)  # Semi-transparent blue
+        border_color = QColor(100, 200, 255, 200)
+        
+        painter.setBrush(QBrush(color))
+        # Use constant width pen regardless of zoom
+        painter.setPen(QPen(border_color, 1 / self._zoom, Qt.SolidLine))
+        painter.drawRect(rect)
+        
+    def _finalize_rect_selection(self):
+        """Select all body parts within the selection rectangle."""
+        if not self._rect_start_pos or not self._rect_current_pos:
+            return
+            
+        # Define selection rect
+        left = min(self._rect_start_pos.x(), self._rect_current_pos.x())
+        top = min(self._rect_start_pos.y(), self._rect_current_pos.y())
+        right = max(self._rect_start_pos.x(), self._rect_current_pos.x())
+        bottom = max(self._rect_start_pos.y(), self._rect_current_pos.y())
+        
+        # Find intersecting body parts
+        selected = []
+        if self._entity:
+            for bp in self._entity.body_parts:
+                if not bp.visible:
+                    continue
+                
+                # Check intersection
+                bp_left = bp.position.x
+                bp_top = bp.position.y
+                bp_right = bp_left + (bp.size.x * bp.pixel_scale)
+                bp_bottom = bp_top + (bp.size.y * bp.pixel_scale)
+                
+                # Simple AABB intersection
+                if (left < bp_right and right > bp_left and
+                    top < bp_bottom and bottom > bp_top):
+                    selected.append(bp)
+        
+        # Update selection
+        self._selected_bodyparts = selected
+        
+        # Update primary selection (last selected or first in list)
+        if selected:
+            self._selected_bodypart = selected[0]
+        else:
+            self._selected_bodypart = None
+            
+        # Notify
+        self._signal_hub.notify_bodyparts_selection_changed(self._selected_bodyparts)
     
     def _draw_grid(self, painter: QPainter):
         """Draw background grid."""
@@ -296,7 +391,14 @@ class ViewportWidget(QWidget):
         sorted_parts = self._entity.get_sorted_body_parts()
         texture_manager = get_texture_manager()
         
-        for bp in sorted_parts:
+        # If show-above is enabled and there's a selected bodypart, render it last
+        parts_to_render = sorted_parts
+        if self._show_selected_above and self._selected_bodypart and self._selected_bodypart in sorted_parts:
+            # Remove selected part from list and add it at the end
+            parts_to_render = [bp for bp in sorted_parts if bp != self._selected_bodypart]
+            parts_to_render.append(self._selected_bodypart)
+        
+        for bp in parts_to_render:
             if not bp.visible:
                 continue
             
@@ -366,6 +468,10 @@ class ViewportWidget(QWidget):
     
     def _draw_hitbox(self, painter: QPainter, hitbox: Hitbox, offset: Vec2):
         """Draw a hitbox."""
+        # Skip disabled hitboxes
+        if not hitbox.enabled:
+            return
+        
         # Choose color based on type
         colors = {
             "collision": QColor(255, 100, 100, 100),
@@ -382,9 +488,12 @@ class ViewportWidget(QWidget):
         else:
             painter.setPen(QPen(color.darker(150), 1 / self._zoom))
         
-        x = offset.x + hitbox.position.x
-        y = offset.y + hitbox.position.y
-        painter.drawRect(QRectF(x, y, hitbox.size.x, hitbox.size.y))
+        # Hitbox uses integer pixel coordinates
+        x = int(offset.x + hitbox.x)
+        y = int(offset.y + hitbox.y)
+        
+        rect = QRect(x, y, hitbox.width, hitbox.height)
+        painter.drawRect(rect)
         
         # Draw resize handles if selected and in edit mode
         if hitbox == self._selected_hitbox and self._hitbox_edit_mode:
@@ -394,9 +503,9 @@ class ViewportWidget(QWidget):
             
             # Corner handles
             painter.drawEllipse(QPointF(x, y), handle_size, handle_size)
-            painter.drawEllipse(QPointF(x + hitbox.size.x, y), handle_size, handle_size)
-            painter.drawEllipse(QPointF(x, y + hitbox.size.y), handle_size, handle_size)
-            painter.drawEllipse(QPointF(x + hitbox.size.x, y + hitbox.size.y), handle_size, handle_size)
+            painter.drawEllipse(QPointF(x + hitbox.width, y), handle_size, handle_size)
+            painter.drawEllipse(QPointF(x, y + hitbox.height), handle_size, handle_size)
+            painter.drawEllipse(QPointF(x + hitbox.width, y + hitbox.height), handle_size, handle_size)
     
     def _draw_ui_overlay(self, painter: QPainter):
         """Draw UI overlay in screen space."""
@@ -413,6 +522,7 @@ class ViewportWidget(QWidget):
         """Handle mouse press."""
         if event.button() == Qt.LeftButton:
             world_pos = self._screen_to_world(QPointF(event.pos()))
+            modifiers = event.modifiers()
             
             # Check for hitbox interaction if in edit mode
             if self._hitbox_edit_mode:
@@ -428,19 +538,25 @@ class ViewportWidget(QWidget):
                         self._dragging_hitbox_parent = parent_bp
                         self._resize_edge = edge
                         self._drag_start_pos = world_pos
-                        self._drag_start_hitbox_pos = Vec2(hitbox.position.x, hitbox.position.y)
-                        self._drag_start_hitbox_size = Vec2(hitbox.size.x, hitbox.size.y)
+                        self._drag_start_hitbox_pos = Vec2(hitbox.x, hitbox.y)
+                        self._drag_start_hitbox_size = Vec2(hitbox.width, hitbox.height)
                         self._selected_hitbox = hitbox
                         self._signal_hub.notify_hitbox_selected(hitbox)
+                        
+                        if self._history_manager:
+                            self._history_manager.begin_change("Resize Hitbox")
                     else:
                         # Start dragging hitbox
                         self._dragging_hitbox = hitbox
                         self._dragging_hitbox_parent = parent_bp
                         self._resize_edge = None
                         self._drag_start_pos = world_pos
-                        self._drag_start_hitbox_pos = Vec2(hitbox.position.x, hitbox.position.y)
+                        self._drag_start_hitbox_pos = Vec2(hitbox.x, hitbox.y)
                         self._selected_hitbox = hitbox
                         self._signal_hub.notify_hitbox_selected(hitbox)
+                        
+                        if self._history_manager:
+                            self._history_manager.begin_change("Move Hitbox")
                     self.update()
                     return
                 else:
@@ -453,17 +569,63 @@ class ViewportWidget(QWidget):
             clicked_bp = self._get_bodypart_at(world_pos)
             
             if clicked_bp:
-                # Start dragging body part
-                self._selected_bodypart = clicked_bp
-                self._is_dragging = True
-                self._drag_start_pos = world_pos
-                self._drag_start_bp_pos = Vec2(clicked_bp.position.x, clicked_bp.position.y)
-                self._signal_hub.notify_bodypart_selected(clicked_bp)
-                self.update()
+                # Handle Ctrl+click toggle
+                if modifiers & Qt.ControlModifier:
+                    # Toggle selection
+                    if clicked_bp in self._selected_bodyparts:
+                        self._selected_bodyparts.remove(clicked_bp)
+                    else:
+                        self._selected_bodyparts.append(clicked_bp)
+                    
+                    # Update primary selection
+                    if self._selected_bodyparts:
+                        self._selected_bodypart = self._selected_bodyparts[0]
+                    else:
+                        self._selected_bodypart = None
+                    
+                    # Notify panel to sync
+                    self._signal_hub.notify_bodyparts_selection_changed(self._selected_bodyparts)
+                    self.update()
+                else:
+                    # Normal click - check if clicking on already-selected bodypart
+                    if clicked_bp in self._selected_bodyparts:
+                        # Start dragging ALL selected bodyparts
+                        self._is_dragging = True
+                        self._drag_start_pos = world_pos
+                        # Store start positions for ALL selected bodyparts using object ID as key
+                        self._drag_start_positions = {}
+                        for bp in self._selected_bodyparts:
+                            self._drag_start_positions[id(bp)] = Vec2(bp.position.x, bp.position.y)
+                        
+                        if self._history_manager:
+                            self._history_manager.begin_change("Move Body Parts")
+                    else:
+                        # Clicked on non-selected bodypart - select only this one
+                        self._selected_bodypart = clicked_bp
+                        self._selected_bodyparts = [clicked_bp]
+                        self._is_dragging = True
+                        self._drag_start_pos = world_pos
+                        self._drag_start_positions = {id(clicked_bp): Vec2(clicked_bp.position.x, clicked_bp.position.y)}
+                        self._signal_hub.notify_bodypart_selected(clicked_bp)
+                        self._signal_hub.notify_bodyparts_selection_changed(self._selected_bodyparts)
+                        
+                        if self._history_manager:
+                            self._history_manager.begin_change("Move Body Parts")
+                    
+                    self.update()
             else:
-                # Deselect
-                self._selected_bodypart = None
-                self._signal_hub.notify_bodypart_selected(None)
+                # Clicked on empty space
+                if not (modifiers & Qt.ControlModifier):
+                    # Clear selection if not holding Ctrl
+                    self._selected_bodypart = None
+                    self._selected_bodyparts = []
+                    self._signal_hub.notify_bodypart_selected(None)
+                    self._signal_hub.notify_bodyparts_selection_changed([])
+                
+                # Start rectangle selection
+                self._rect_selecting = True
+                self._rect_start_pos = world_pos
+                self._rect_current_pos = world_pos
                 self.update()
         
         elif event.button() == Qt.MiddleButton or (event.button() == Qt.RightButton):
@@ -477,6 +639,12 @@ class ViewportWidget(QWidget):
         # Update cursor based on hover state (only when not dragging)
         if not self._dragging_hitbox and not self._is_dragging and not self._is_panning:
             self._update_cursor_for_hover(QPointF(event.pos()))
+            
+        # Handle rectangle selection
+        if self._rect_selecting:
+            self._rect_current_pos = self._screen_to_world(QPointF(event.pos()))
+            self.update()
+            return
         
         if self._dragging_hitbox:
             # Drag or resize hitbox
@@ -502,68 +670,47 @@ class ViewportWidget(QWidget):
                 if self._resize_edge in ['bottom', 'bl', 'br']:
                     new_h += delta.y()
                 
-                # Round to pixels
-                new_x = round(new_x)
-                new_y = round(new_y)
-                new_w = round(new_w)
-                new_h = round(new_h)
+                # Snap to grid and convert to integers (combined operation)
+                new_x = self._snap_to_grid_int(new_x)
+                new_y = self._snap_to_grid_int(new_y)
+                new_w = max(1, self._snap_to_grid_int(new_w))  # Enforce minimum size
+                new_h = max(1, self._snap_to_grid_int(new_h))
                 
-                # Apply grid snap
-                if self._snap_value > 0:
-                    new_x = self._snap_to_grid(new_x)
-                    new_y = self._snap_to_grid(new_y)
-                    new_w = self._snap_to_grid(new_w)
-                    new_h = self._snap_to_grid(new_h)
-                
-                # Minimum size
-                new_w = max(1, new_w)
-                new_h = max(1, new_h)
-                
-                self._dragging_hitbox.position.x = new_x
-                self._dragging_hitbox.position.y = new_y
-                self._dragging_hitbox.size.x = new_w
-                self._dragging_hitbox.size.y = new_h
+                # Update hitbox with pixel-precise integer coordinates
+                self._dragging_hitbox.x = new_x
+                self._dragging_hitbox.y = new_y
+                self._dragging_hitbox.width = new_w
+                self._dragging_hitbox.height = new_h
             else:
                 # Move hitbox
                 new_x = self._drag_start_hitbox_pos.x + delta.x()
                 new_y = self._drag_start_hitbox_pos.y + delta.y()
                 
-                # Round to pixels
-                new_x = round(new_x)
-                new_y = round(new_y)
-                
-                # Apply grid snap
-                if self._snap_value > 0:
-                    new_x = self._snap_to_grid(new_x)
-                    new_y = self._snap_to_grid(new_y)
-                
-                self._dragging_hitbox.position.x = new_x
-                self._dragging_hitbox.position.y = new_y
+                # Snap to grid and convert to integers (combined operation)
+                self._dragging_hitbox.x = self._snap_to_grid_int(new_x)
+                self._dragging_hitbox.y = self._snap_to_grid_int(new_y)
             
             self._signal_hub.notify_hitbox_modified(self._dragging_hitbox)
             self.update()
         
-        elif self._is_dragging and self._selected_bodypart:
-            # Drag body part
+        elif self._is_dragging and self._selected_bodyparts:
+            # Drag body parts
             world_pos = self._screen_to_world(QPointF(event.pos()))
             delta = world_pos - self._drag_start_pos
             
-            new_x = self._drag_start_bp_pos.x + delta.x()
-            new_y = self._drag_start_bp_pos.y + delta.y()
+            # Move ALL selected body part(s)
+            for bp in self._selected_bodyparts:
+                if id(bp) in self._drag_start_positions:
+                    start_pos = self._drag_start_positions[id(bp)]
+                    new_x = start_pos.x + delta.x()
+                    new_y = start_pos.y + delta.y()
+                    
+                    # Snap to grid and convert to integers
+                    bp.position.x = self._snap_to_grid_int(new_x)
+                    bp.position.y = self._snap_to_grid_int(new_y)
+                    
+                    self._signal_hub.notify_bodypart_modified(bp)
             
-            # Always round to pixel precision
-            new_x = round(new_x)
-            new_y = round(new_y)
-            
-            # Apply grid snapping if snap value is set (always active, no Ctrl needed)
-            if self._snap_value > 0:
-                new_x = self._snap_to_grid(new_x)
-                new_y = self._snap_to_grid(new_y)
-            
-            self._selected_bodypart.position.x = new_x
-            self._selected_bodypart.position.y = new_y
-            
-            self._signal_hub.notify_bodypart_modified(self._selected_bodypart)
             self.update()
         
         elif self._is_panning:
@@ -580,6 +727,47 @@ class ViewportWidget(QWidget):
     def mouseReleaseEvent(self, event):
         """Handle mouse release."""
         if event.button() == Qt.LeftButton:
+            
+            # Handle rectangle selection finalization
+            if self._rect_selecting:
+                self._rect_selecting = False
+                self._finalize_rect_selection()
+                self._rect_start_pos = None
+                self._rect_current_pos = None
+                self.update()
+                return
+
+            # Finish bodypart move (using state snapshot)
+            if self._is_dragging and self._selected_bodyparts:
+                if self._history_manager:
+                    # Check if any position actually changed
+                    changed = False
+                    for bp in self._selected_bodyparts:
+                        if id(bp) in self._drag_start_positions:
+                            start_pos = self._drag_start_positions[id(bp)]
+                            if bp.position.x != start_pos.x or bp.position.y != start_pos.y:
+                                changed = True
+                                break
+                    
+                    if changed:
+                        self._history_manager.end_change()
+                    else:
+                        self._history_manager.cancel_change()
+            
+            # Finish hitbox move/resize (using state snapshot)
+            if self._dragging_hitbox and self._history_manager:
+                current_pos = Vec2(self._dragging_hitbox.x, self._dragging_hitbox.y)
+                current_size = Vec2(self._dragging_hitbox.width, self._dragging_hitbox.height)
+                
+                # Check if position OR size changed
+                if (current_pos.x != self._drag_start_hitbox_pos.x or 
+                    current_pos.y != self._drag_start_hitbox_pos.y or
+                    current_size.x != self._drag_start_hitbox_size.x or
+                    current_size.y != self._drag_start_hitbox_size.y):
+                    self._history_manager.end_change()
+                else:
+                    self._history_manager.cancel_change()
+            
             self._is_dragging = False
             self._dragging_hitbox = None
             self._resize_edge = None
@@ -600,6 +788,14 @@ class ViewportWidget(QWidget):
             self._selected_bodypart = bodypart
             self.update()
     
+    def _on_bodyparts_selection_changed(self, selected_bodyparts: list):
+        """Handle multi-selection change from panel."""
+        self._selected_bodyparts = selected_bodyparts
+        # Update primary selection to first in list
+        if selected_bodyparts:
+            self._selected_bodypart = selected_bodyparts[0]
+        self.update()
+    
     def _on_bodypart_modified(self, bodypart):
         """Handle external body part modification."""
         self.update()
@@ -609,6 +805,16 @@ class ViewportWidget(QWidget):
         if self._snap_value <= 0:
             return value
         return round(value / self._snap_value) * self._snap_value
+    
+    def _snap_to_grid_int(self, value: float) -> int:
+        """Snap value to grid (if enabled) and return as integer.
+        
+        This combines grid snapping and pixel rounding into a single operation,
+        eliminating redundant int(round()) calls.
+        """
+        if self._snap_value > 0:
+            return int(round(value / self._snap_value) * self._snap_value)
+        return int(round(value))
     
     def _on_snap_value_changed(self, snap_value: float):
         """Handle snap value change from signal hub."""
@@ -624,6 +830,11 @@ class ViewportWidget(QWidget):
         if hitbox != self._selected_hitbox:
             self._selected_hitbox = hitbox
             self.update()
+    
+    def _on_show_above_changed(self, enabled: bool):
+        """Handle show-above-while-editing toggle."""
+        self._show_selected_above = enabled
+        self.update()
     
     def _update_cursor_for_hover(self, screen_pos: QPointF):
         """Update cursor based on what's under the mouse."""

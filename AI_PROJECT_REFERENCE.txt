@@ -1,5 +1,5 @@
 # ENTITY EDITOR - AI TECHNICAL REFERENCE
-# Last Updated: 2026-01-22
+# Last Updated: 2026-01-25
 # Python Entity Editor for Game Engine - Complete Technical Documentation
 
 ## PROJECT OVERVIEW
@@ -124,6 +124,9 @@ viewport_selection_changed = Signal(object)
 viewport_transform_changed = Signal()
 snap_value_changed = Signal(float)
 
+# Undo/Redo signals
+undo_redo_state_changed = Signal(bool, bool, str, str)  # can_undo, can_redo, undo_desc, redo_desc
+
 # UV/Texture signals
 texture_loaded = Signal(str)
 uv_modified = Signal(object)
@@ -132,10 +135,38 @@ uv_modified = Signal(object)
 ### Notify Methods Pattern
 Each signal has corresponding notify_* method:
 - notify_bodypart_selected(bodypart)
+- notify_bodyparts_selection_changed(selected_list)
 - notify_bodypart_modified(bodypart)
+- notify_undo_redo_state_changed(...)
 - etc.
 
 Most modify methods automatically emit entity_modified signal.
+
+## UNDO/REDO ARCHITECTURE (src/core/state_history.py)
+
+### Overview
+Replaced legacy Command pattern with a robust State-Based Undo system using snapshots.
+
+### Key Components
+- **StateHistory:** Manages the stack of entity states (serialized to JSON/dict).
+- **HistoryManager:** High-level controller usually accessible via MainWindow.
+
+### Transaction Pattern
+```python
+# 1. Start transaction
+history_manager.begin_change("Description of change")
+
+# 2. Modify entity data
+entity.body_parts[0].position.x += 10
+
+# 3. Commit transaction
+history_manager.end_change()
+```
+
+### Features
+- **Atomic Transactions:** Multiple edits (e.g., group moves) are captured as single undo steps.
+- **Change Verification:** `end_change()` can be cancelled if no actual data changed.
+- **Robustness:** Eliminates "inverse command" logic errors by simply restoring previous states.
 
 ## UI ARCHITECTURE
 
@@ -144,6 +175,7 @@ Most modify methods automatically emit entity_modified signal.
 - Layout: Central viewport widget + docked panels
 - Toolbar Features:
   * Grid snap dropdown (Off, 1px, 2px, 4px, 8px, 16px, 32px, Custom)
+    - Uses Qt.ClickFocus to prevent keyboard search from intercepting spinbox input
   * Zoom controls
 - File Menu: New, Open, Save, Save As, Export as JSON, Recent Files
 - Signal Connections: Connects to signal hub for entity events
@@ -161,6 +193,10 @@ Most modify methods automatically emit entity_modified signal.
 - _hitbox_edit_mode: Boolean for hitbox editing mode
 - _dragging_hitbox: Currently dragged/resized hitbox
 - _resize_edge: String identifier for resize edge ('tl', 'tr', 'bl', 'br', 'left', 'right', 'top', 'bottom')
+- _selected_bodyparts: List[BodyPart] for multi-selection
+- _rect_selecting: Boolean for rectangle selection mode
+- _rect_start_pos / _rect_current_pos: Points for selection rectangle
+
 
 **Key Methods:**
 - paintEvent(): Custom QPainter rendering
@@ -173,6 +209,8 @@ Most modify methods automatically emit entity_modified signal.
 - _screen_to_world(screen_pos): Coordinate transformation
 - _world_to_screen(world_pos): Inverse coordinate transformation
 - _update_cursor_for_hover(screen_pos): Dynamic cursor changes for resize indicators
+- _snap_to_grid(value): Snaps float value to grid if enabled
+- _snap_to_grid_int(value): Snaps value to grid and returns integer (eliminates redundant rounding)
 
 **Mouse Interaction:**
 - Left click: Select body part/hitbox
@@ -187,11 +225,21 @@ Most modify methods automatically emit entity_modified signal.
 - Selection highlight: Yellow outline for selected hitbox in edit mode
 - Resize handles: 4 corner circles on selected hitbox when edit mode active
 
+**Signal Connections:**
+- entity_loaded, bodypart_selected, bodypart_modified, bodypart_added, bodypart_removed, bodypart_reordered
+- hitbox_selected, hitbox_modified, hitbox_edit_mode_changed
+- snap_value_changed, bodypart_show_above_changed
+- bodyparts_selection_changed (Multi-select)
+
+**Critical Fix (2026-01-24):**
+- Added missing `hitbox_modified` signal connection - hitbox changes from UI now update viewport immediately
+- Added `_snap_to_grid_int()` helper to consolidate snap+round operations
+
 ### BodyPartsPanel (src/ui/panels/bodyparts_panel.py)
 **Purpose:** List and edit body parts
 
 **UI Components:**
-- _bodyparts_list: QListWidget with custom item widgets
+- _bodyparts_list: QListWidget with custom item widgets (ExtendedSelection mode enabled)
 - Custom Item Widget Structure:
   * Eye button (👁 visible / ⚫ hidden)
   * QLabel with body part name
@@ -217,6 +265,7 @@ Most modify methods automatically emit entity_modified signal.
 - _toggle_visibility(bodypart): Toggles visible field
 - _on_name_changed(): Updates label widget only (no list refresh to prevent deselection)
 - _on_property_changed(): Updates selected body part from UI inputs
+- _on_external_modification(bodypart): Handles external changes without list refresh
 
 ### HitboxPanel (src/ui/panels/hitbox_panel.py)
 **Purpose:** List and edit hitboxes for selected body part
@@ -232,8 +281,8 @@ Most modify methods automatically emit entity_modified signal.
 - Property Editors:
   * Name (QLineEdit) - editingFinished signal
   * Type (QComboBox: collision, damage, trigger)
-  * Position X/Y (QDoubleSpinBox) - relative to parent body part
-  * Size Width/Height (QDoubleSpinBox)
+  * Position X/Y (QSpinBox) - integer pixels, relative to parent body part
+  * Size Width/Height (QSpinBox) - integer pixels
 
 **Buttons:**
 - Add: Creates new hitbox with parent's rendered size as default
@@ -242,9 +291,15 @@ Most modify methods automatically emit entity_modified signal.
 
 **Important Behaviors:**
 - Only shows hitboxes from currently selected body part
-- Edit mode checkbox disabled when no body part selected
-- Auto-disables edit mode when body part deselected
+- Edit mode checkbox is a persistent toggle (stays checked regardless of selection)
+- Edit mode applies to all body parts when active
 - Default hitbox size = parent body part size × pixel_scale
+
+**Important Methods:**
+- _refresh_list(): Rebuilds list with custom widgets and eye icons (preserves selection)
+- _on_external_modification(hitbox): Updates properties without list refresh to prevent focus loss
+- _on_property_changed(): Updates hitbox from UI, fires on valueChanged for instant viewport updates
+- _toggle_visibility(hitbox): Toggles enabled field
 
 ### UVEditorDialog (src/ui/dialogs/uv_editor_dialog.py)
 **Purpose:** Modal dialog for precise UV editing
@@ -310,6 +365,12 @@ def _snap_to_grid(value: float) -> float:
     if snap_value <= 0:
         return value
     return round(value / snap_value) * snap_value
+
+def _snap_to_grid_int(value: float) -> int:
+    """Snap value to grid and return integer (eliminates redundant rounding)."""
+    if snap_value > 0:
+        return int(round(value / snap_value) * snap_value)
+    return int(round(value))
 ```
 
 ### Pixel Scale Multiplier
@@ -409,6 +470,25 @@ widget = list_widget.itemWidget(current_item)
 label = widget.findChild(QLabel)
 label.setText(new_name)
 ```
+
+### Property Editing Without Focus Loss
+**Problem:** List refresh on property changes caused spinboxes to lose focus while typing
+**Solution (Both Panels):**
+- Property change signals connected to `_on_external_modification()` instead of `_refresh_list()`
+- `_on_external_modification()` only updates UI from data model if item is currently selected
+- No list rebuild during property edits → no focus loss
+- Instant viewport updates via `valueChanged` signal without keyboard tracking interference
+```python
+def _on_external_modification(self, item):
+    """Handle external modification without refreshing list."""
+    if item == self._selected_item:
+        self._update_properties()  # Update UI only, no list rebuild
+```
+
+**Critical for Hitbox Panel:**
+- All position/size spinboxes use default keyboard tracking (enabled)
+- Grid snap combo box uses `Qt.ClickFocus` to prevent keyboard search from stealing keystrokes
+- This allows instant viewport updates while typing without combo box interference
 
 ## RENDERING PIPELINE
 
@@ -531,16 +611,20 @@ Backwards compatibility via default values in from_dict() methods
 4. **Always-On Grid Snap:** No Ctrl key required, simplified user interaction
 5. **Body Part Scoped Hitboxes:** Prevents accidental interaction with other parts' hitboxes
 6. **Separate Name Handler:** editingFinished instead of textChanged prevents deselection
-7. **Auto-Size on UV Change:** Maintains 1:1 pixel mapping, makes pixel_scale behave as true multiplier
-8. **Custom List Items:** Allows eye icons and rich formatting without QItemDelegate complexity
+7. **External Modification Handler:** Using _on_external_modification instead of _refresh_list prevents focus loss during property editing
+8. **Combo Box Focus Policy:** Grid snap combo uses ClickFocus to prevent keyboard search from intercepting spinbox input
+9. **Missing Signal Connection Fixed:** ViewportWidget now listens to hitbox_modified signal (critical bug fix 2026-01-24)
+10. **Consolidated Snap+Round:** _snap_to_grid_int() eliminates redundant int(round()) calls
+11. **Auto-Size on UV Change:** Maintains 1:1 pixel mapping, makes pixel_scale behave as true multiplier
+12. **Custom List Items:** Allows eye icons and rich formatting without QItemDelegate complexity
+13. **State-Based Undo:** Switch from Command pattern to State Snapshots (2026-01-25) eliminates complex inverse logic and ensures robust multi-step undo.
+14. **Multi-Selection:** Implemented via standard Qt ExtendedSelection and synced lists to support group operations.
 
 ## TESTING WORKFLOW
 1. Launch: `python main.py`
 2. Create entity: File → New
 3. Add body part: Body Parts Panel → Add
 4. Assign texture: Properties → Browse
-5. Edit UV: Properties → Edit UV Map
-6. Add hitbox: Hitbox Panel → Add
 7. Enable edit mode: Hitbox Panel → Edit Hitboxes checkbox
 8. Save: File → Save As → .entdef
 9. Export: File → Export as JSON

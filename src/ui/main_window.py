@@ -15,7 +15,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.data import Entity, EntitySerializer, EntityDeserializer
-from src.core import get_signal_hub
+from src.core import get_signal_hub, HistoryManager
 from src.ui.widgets import ViewportWidget
 from src.ui.panels import EntityPanel, BodyPartsPanel, HitboxPanel
 
@@ -34,6 +34,10 @@ class MainWindow(QMainWindow):
         # Signal hub
         self._signal_hub = get_signal_hub()
         self._signal_hub.entity_modified.connect(self._on_entity_modified)
+        self._signal_hub.undo_redo_state_changed.connect(self._on_undo_redo_state_changed)
+        
+        # History manager (created when entity loaded)
+        self._history_manager: HistoryManager = None
         self._signal_hub.entity_saved.connect(self._on_entity_saved)
         
         # Setup UI
@@ -121,6 +125,23 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
+        # Edit menu
+        edit_menu = menubar.addMenu("&Edit")
+        
+        self._undo_action = QAction("&Undo", self)
+        self._undo_action.setShortcut(QKeySequence.Undo)  # Ctrl+Z
+        self._undo_action.setShortcutContext(Qt.ApplicationShortcut)  # CRITICAL: Work even when text widgets focused
+        self._undo_action.triggered.connect(self._on_undo)
+        self._undo_action.setEnabled(False)
+        edit_menu.addAction(self._undo_action)
+        
+        self._redo_action = QAction("&Redo", self)
+        self._redo_action.setShortcut(QKeySequence.Redo)  # Ctrl+Y or Ctrl+Shift+Z
+        self._redo_action.setShortcutContext(Qt.ApplicationShortcut)  # CRITICAL: Work even when text widgets focused
+        self._redo_action.triggered.connect(self._on_redo)
+        self._redo_action.setEnabled(False)
+        edit_menu.addAction(self._redo_action)
+        
         # View menu
         view_menu = menubar.addMenu("&View")
         
@@ -162,6 +183,7 @@ class MainWindow(QMainWindow):
         self._snap_combo.setCurrentIndex(1)  # Default: 1px for pixel-perfect
         self._snap_combo.currentTextChanged.connect(self._on_snap_changed)
         self._snap_combo.setToolTip("Grid snap in pixels (always active when dragging)")
+        self._snap_combo.setFocusPolicy(Qt.ClickFocus)  # Prevent keyboard search from intercepting spinbox input
         toolbar.addWidget(self._snap_combo)
         
         # Store current snap value
@@ -181,6 +203,9 @@ class MainWindow(QMainWindow):
         self._current_entity = Entity(name="NewEntity")
         self._current_filepath = None
         self._is_modified = False
+        
+        # Create new history manager for new entity
+        self._history_manager = HistoryManager(self._current_entity, self._signal_hub)
         
         self._signal_hub.notify_entity_loaded(self._current_entity)
         self._update_window_title()
@@ -206,6 +231,9 @@ class MainWindow(QMainWindow):
             self._current_entity = entity
             self._current_filepath = filename
             self._is_modified = False
+            
+            # Create new history manager for loaded entity
+            self._history_manager = HistoryManager(self._current_entity, self._signal_hub)
             
             self._signal_hub.notify_entity_loaded(self._current_entity)
             self._update_window_title()
@@ -390,6 +418,41 @@ class MainWindow(QMainWindow):
             "• Hitbox editing\n"
             "• UV mapping\n"
         )
+    
+    def _on_undo(self):
+        """Handle undo action."""
+        if self._history_manager and self._history_manager.undo():
+            desc = self._history_manager.get_redo_description()  # What we just undid
+            if desc:
+                self._statusbar.showMessage(f"Undone: {desc}", 2000)
+    
+    def _on_redo(self):
+        """Handle redo action."""
+        if self._history_manager and self._history_manager.redo():
+            desc = self._history_manager.get_undo_description()  # What we just redid
+            if desc:
+                self._statusbar.showMessage(f"Redone: {desc}", 2000)
+    
+    def _on_undo_redo_state_changed(self, can_undo: bool, can_redo: bool, 
+                                    undo_desc: str, redo_desc: str):
+        """Update undo/redo action states."""
+        self._undo_action.setEnabled(can_undo)
+        self._redo_action.setEnabled(can_redo)
+        
+        # Update action text with description
+        if undo_desc:
+            self._undo_action.setText(f"&Undo {undo_desc}")
+        else:
+            self._undo_action.setText("&Undo")
+        
+        if redo_desc:
+            self._redo_action.setText(f"&Redo {redo_desc}")
+        else:
+            self._redo_action.setText("&Redo")
+    
+    def get_history_manager(self) -> HistoryManager:
+        """Get the history manager for use by panels."""
+        return self._history_manager
     
     def closeEvent(self, event):
         """Handle window close event."""
