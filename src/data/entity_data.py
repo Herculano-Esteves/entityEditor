@@ -30,6 +30,18 @@ class Vec2:
         """Create from dictionary."""
         return cls(x=data.get("x", 0.0), y=data.get("y", 0.0))
     
+    def __add__(self, other):
+        """Vector addition."""
+        if isinstance(other, Vec2):
+            return Vec2(self.x + other.x, self.y + other.y)
+        return NotImplemented
+
+    def __sub__(self, other):
+        """Vector subtraction."""
+        if isinstance(other, Vec2):
+            return Vec2(self.x - other.x, self.y - other.y)
+        return NotImplemented
+
     def __iter__(self):
         """Allow tuple unpacking."""
         yield self.x
