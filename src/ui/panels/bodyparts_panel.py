@@ -24,6 +24,7 @@ from src.core import get_signal_hub, AddBodyPartCommand, RemoveBodyPartCommand, 
 from src.core.state.editor_state import EditorState
 from src.rendering import get_texture_manager
 from src.ui.dialogs.uv_editor_dialog import UVEditorDialog
+from src.core.naming_utils import generate_unique_name, ensure_unique_name
 
 class BodyPartsPanel(QWidget):
     """Panel for managing body parts."""
@@ -39,6 +40,10 @@ class BodyPartsPanel(QWidget):
         self._parameter_change_start_value = None
         self._updating_ui = False
         
+        # Isolation State
+        self._isolating_bp = None # The body part currently isolated
+        self._isolation_snapshot = {} # Map[bp_id, bool] - visibility state before isolation
+        
         self._setup_ui()
         self._connect_signals()
         
@@ -53,6 +58,16 @@ class BodyPartsPanel(QWidget):
         # Body parts list
         list_label = QLabel("Body Parts:")
         layout.addWidget(list_label)
+        
+        # Options
+        opts_layout = QHBoxLayout()
+        self._sel_on_top_check = QCheckBox("Show Selection on Top")
+        self._sel_on_top_check.setToolTip("If enabled, selected body part is drawn above others")
+        self._sel_on_top_check.setChecked(self._state.selection_on_top)
+        self._sel_on_top_check.toggled.connect(self._on_sel_on_top_toggled)
+        opts_layout.addWidget(self._sel_on_top_check)
+        opts_layout.addStretch()
+        layout.addLayout(opts_layout)
         
         self._bodyparts_list = QListWidget()
         self._bodyparts_list.setSelectionMode(QListWidget.ExtendedSelection)  # Enable multi-select
@@ -166,11 +181,12 @@ class BodyPartsPanel(QWidget):
         uv_btns.addWidget(self._reset_uv_btn)
         
         uv_layout.addLayout(uv_btns)
-        uv_group.setLayout(uv_layout)
-        props_layout.addRow(uv_group)
-        
+
         # Flip
         flip_layout = QHBoxLayout()
+        flip_label = QLabel("Flip:")
+        flip_layout.addWidget(flip_label)
+
         self._flip_x_check = QCheckBox("X")
         self._flip_x_check.toggled.connect(self._on_flip_changed)
         flip_layout.addWidget(self._flip_x_check)
@@ -178,8 +194,13 @@ class BodyPartsPanel(QWidget):
         self._flip_y_check = QCheckBox("Y")
         self._flip_y_check.toggled.connect(self._on_flip_changed)
         flip_layout.addWidget(self._flip_y_check)
+
+        flip_layout.addStretch() # align left
         
-        props_layout.addRow("Flip:", flip_layout)
+        uv_layout.addLayout(flip_layout)
+
+        uv_group.setLayout(uv_layout)
+        props_layout.addRow(uv_group)
         
         self._props_group.setLayout(props_layout)
         layout.addWidget(self._props_group)
@@ -208,6 +229,9 @@ class BodyPartsPanel(QWidget):
         
     def _refresh_list(self):
         """Refresh the body parts list from state."""
+        # Save scroll position
+        scroll_val = self._bodyparts_list.verticalScrollBar().value()
+        
         self._bodyparts_list.blockSignals(True)
         self._bodyparts_list.clear()
         
@@ -231,6 +255,15 @@ class BodyPartsPanel(QWidget):
                 eye_btn.clicked.connect(lambda checked, b=bp: self._toggle_visibility(b))
                 layout.addWidget(eye_btn)
                 
+                # Isolate button (Target icon or similar)
+                is_isolated = (self._isolating_bp == bp)
+                iso_btn = QPushButton("🎯" if is_isolated else "⭕")
+                iso_btn.setFixedSize(20, 20)
+                iso_btn.setFlat(True)
+                iso_btn.setToolTip("Isolate (Hide others)")
+                iso_btn.clicked.connect(lambda checked, b=bp: self._toggle_isolation(b))
+                layout.addWidget(iso_btn)
+                
                 # Name
                 name_lbl = QLabel(bp.name)
                 layout.addWidget(name_lbl)
@@ -244,6 +277,11 @@ class BodyPartsPanel(QWidget):
                     item.setSelected(True)
                     
         self._bodyparts_list.blockSignals(False)
+        
+        # Restore scroll position
+        if scroll_val is not None:
+            self._bodyparts_list.verticalScrollBar().setValue(scroll_val)
+            
         self._update_properties_enabled()
 
     def _on_list_selection_changed(self):
@@ -339,6 +377,45 @@ class BodyPartsPanel(QWidget):
         bodypart.visible = not bodypart.visible
         get_signal_hub().notify_bodypart_modified(bodypart)
         self._refresh_list()
+        
+    def _on_sel_on_top_toggled(self, checked):
+        self._state.set_selection_on_top(checked)
+        get_signal_hub().notify_entity_modified() # Trigger redraw
+
+    def _toggle_isolation(self, bodypart):
+        entity = self._state.current_entity
+        if not entity: return
+
+        if self._isolating_bp == bodypart:
+            # Disable Isolation: Restore snapshot
+            self._isolating_bp = None
+            for bp in entity.body_parts:
+                if id(bp) in self._isolation_snapshot:
+                    bp.visible = self._isolation_snapshot[id(bp)]
+            self._isolation_snapshot.clear()
+        else:
+            # Enable Isolation
+            # If already isolating another, restore first? Or just switch focus?
+            # Switching focus seems better: "Isolate THIS one now"
+            
+            # If start fresh isolation
+            if self._isolating_bp is None:
+                self._isolation_snapshot = {id(bp): bp.visible for bp in entity.body_parts}
+            
+            self._isolating_bp = bodypart
+            
+            # Apply: Hide all except target
+            for bp in entity.body_parts:
+                if bp == bodypart:
+                    bp.visible = True
+                else:
+                    bp.visible = False
+            
+        # Notify changes (blindly notify all or just entity? Entity mod is safer for batch visual update)
+        # But we need panel refresh.
+        # We can iterate and emit modified for checks.
+        get_signal_hub().notify_entity_modified() # Force full redraw?
+        self._refresh_list()
 
     def _on_add_bodypart(self):
         if not self._state.current_entity: return
@@ -366,19 +443,33 @@ class BodyPartsPanel(QWidget):
         bp = self._state.selection.selected_body_part
         if not bp: return
         
+        existing_names = {b.name for b in self._state.current_entity.body_parts}
+        new_name = generate_unique_name(bp.name, existing_names)
+        
         new_bp = copy.deepcopy(bp)
-        new_bp.name = self._generate_unique_name(bp.name)
-        new_bp.position.x += 10
-        new_bp.position.y += 10
+        new_bp.name = new_name
+        # Offset removed as per user request
+        # new_bp.position.x += 10
+        # new_bp.position.y += 10
+        
+        # Find index to insert after
+        try:
+            current_index = self._state.current_entity.body_parts.index(bp)
+            insert_index = current_index + 1
+        except ValueError:
+            insert_index = -1
         
         if self._state.history:
-            self._state.history.execute(AddBodyPartCommand(new_bp))
+            self._state.history.execute(AddBodyPartCommand(new_bp, insert_index))
         else:
-            self._state.current_entity.add_body_part(new_bp)
-            get_signal_hub().notify_bodypart_added(new_bp)
+            if insert_index >= 0:
+                self._state.current_entity.body_parts.insert(insert_index, new_bp)
+                get_signal_hub().notify_bodypart_added(new_bp)
+                get_signal_hub().notify_bodypart_reordered()
+            else:
+                self._state.current_entity.add_body_part(new_bp)
+                get_signal_hub().notify_bodypart_added(new_bp)
 
-    def _generate_unique_name(self, base_name):
-        return base_name + "_copy"
 
     def _on_rename_bodypart(self):
         self._name_edit.setFocus()
@@ -428,7 +519,16 @@ class BodyPartsPanel(QWidget):
     def _on_name_changed(self):
         bp = self._state.selection.selected_body_part
         if bp and bp.name != self._name_edit.text():
-            bp.name = self._name_edit.text()
+            new_name = self._name_edit.text()
+            
+            existing_names = {b.name for b in self._state.current_entity.body_parts if b != bp}
+            unique_name = ensure_unique_name(new_name, existing_names)
+            
+            if unique_name != new_name:
+                # Update UI to show enforced name
+                self._name_edit.setText(unique_name)
+            
+            bp.name = unique_name
             get_signal_hub().notify_bodypart_modified(bp) 
             self._refresh_list()
 

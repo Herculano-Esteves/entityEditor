@@ -19,7 +19,7 @@ class ViewportController(QObject):
         self._active_tool: AbstractTool = None
         
         # Default tool
-        self.set_tool(SelectTool(state)) 
+        self.set_tool(SelectTool(state, view)) 
         
     def set_tool(self, tool: AbstractTool):
         """Switch the active tool."""

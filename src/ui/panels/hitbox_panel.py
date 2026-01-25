@@ -19,7 +19,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from src.data import Entity, Hitbox, Vec2
 from src.core import get_signal_hub, AddHitboxCommand, RemoveHitboxCommand, ModifyHitboxCommand
+from src.core import get_signal_hub, AddHitboxCommand, RemoveHitboxCommand, ModifyHitboxCommand
 from src.core.state.editor_state import EditorState
+from src.core.naming_utils import generate_unique_name, ensure_unique_name
 
 class HitboxPanel(QWidget):
     """Panel for managing hitboxes."""
@@ -141,6 +143,11 @@ class HitboxPanel(QWidget):
 
     def _refresh_list(self):
         self._hitbox_list.blockSignals(True)
+    def _refresh_list(self):
+        # Save scroll position
+        scroll_val = self._hitbox_list.verticalScrollBar().value()
+        
+        self._hitbox_list.blockSignals(True)
         self._hitbox_list.clear()
         
         # Determined by selected body part
@@ -155,9 +162,30 @@ class HitboxPanel(QWidget):
             self._add_btn.setEnabled(True)
             
             for hitbox in bp.hitboxes:
-                item = QListWidgetItem(f"{hitbox.name} ({hitbox.hitbox_type})")
+                item = QListWidgetItem()
                 item.setData(Qt.UserRole, hitbox)
                 self._hitbox_list.addItem(item)
+                
+                # Custom Widget
+                widget = QWidget()
+                layout = QHBoxLayout(widget)
+                layout.setContentsMargins(4, 2, 4, 2)
+                layout.setSpacing(4)
+                
+                # Eye Button
+                eye_btn = QPushButton("👁" if hitbox.enabled else "⚫")
+                eye_btn.setFixedSize(20, 20)
+                eye_btn.setFlat(True)
+                eye_btn.clicked.connect(lambda checked, h=hitbox: self._toggle_hitbox_visibility(h))
+                layout.addWidget(eye_btn)
+                
+                # Label
+                name_lbl = QLabel(f"{hitbox.name} ({hitbox.hitbox_type})")
+                layout.addWidget(name_lbl)
+                layout.addStretch()
+                
+                item.setSizeHint(widget.sizeHint())
+                self._hitbox_list.setItemWidget(item, widget)
                 
                 if self._state.selection.is_hitbox_selected(hitbox):
                     item.setSelected(True)
@@ -173,6 +201,11 @@ class HitboxPanel(QWidget):
                  pass
 
         self._hitbox_list.blockSignals(False)
+        
+        # Restore scroll position
+        if scroll_val is not None:
+            self._hitbox_list.verticalScrollBar().setValue(scroll_val)
+            
         self._update_properties_enabled()
 
     def _on_list_selection_changed(self):
@@ -239,6 +272,15 @@ class HitboxPanel(QWidget):
 
     # --- Actions ---
 
+    def _toggle_hitbox_visibility(self, hitbox):
+        hitbox.enabled = not hitbox.enabled
+        get_signal_hub().notify_hitbox_modified(hitbox)
+        # Update UI property if selected
+        if hitbox == self._state.selection.selected_hitbox:
+            self._update_properties()
+        # Refresh list to update icon
+        self._refresh_list()
+
     def _on_add_hitbox(self):
         bp = self._state.selection.selected_body_part
         if not bp: return
@@ -269,18 +311,30 @@ class HitboxPanel(QWidget):
         if not hb or not bp: return
         
         new_hb = copy.deepcopy(hb)
-        new_hb.name += "_copy"
-        new_hb.x += 10
-        new_hb.y += 10
+        existing_names = {h.name for h in bp.hitboxes}
+        new_hb.name = generate_unique_name(hb.name, existing_names)
+        # Offset removed as per user request
+        # new_hb.x += 10
+        # new_hb.y += 10
+        
+        # Find insertion index
+        try:
+            current_index = bp.hitboxes.index(hb)
+            insert_index = current_index + 1
+        except ValueError:
+            insert_index = -1
         
         if self._state.history:
-            self._state.history.execute(AddHitboxCommand(bp, new_hb))
+            self._state.history.execute(AddHitboxCommand(bp, new_hb, insert_index))
         else:
-            bp.add_hitbox(new_hb)
+            if insert_index >= 0:
+                bp.hitboxes.insert(insert_index, new_hb)
+            else:
+                bp.add_hitbox(new_hb)
             get_signal_hub().notify_hitbox_added(new_hb)
 
     def _on_edit_mode_changed(self, enabled):
-        get_signal_hub().notify_hitbox_edit_mode_changed(enabled)
+        self._state.set_hitbox_edit_mode(enabled)
 
     # --- Property Editing ---
 
@@ -302,8 +356,18 @@ class HitboxPanel(QWidget):
     def _on_name_changed(self):
         if self._updating_ui: return
         hb = self._state.selection.selected_hitbox
-        if hb:
-            hb.name = self._name_edit.text()
+        bp = self._state.selection.selected_body_part
+        
+        if hb and bp and hb.name != self._name_edit.text():
+            new_name = self._name_edit.text()
+            existing_names = {h.name for h in bp.hitboxes if h != hb}
+            
+            unique_name = ensure_unique_name(new_name, existing_names)
+            
+            if unique_name != new_name:
+                self._name_edit.setText(unique_name)
+            
+            hb.name = unique_name
             get_signal_hub().notify_hitbox_modified(hb)
             self._refresh_list()
 

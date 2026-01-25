@@ -3,6 +3,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QMouseEvent, QKeyEvent
 
 from src.core.state.editor_state import EditorState
+from src.core import get_signal_hub
 from src.ui.viewport.tools.abstract_tool import AbstractTool
 from src.data import Vec2
 
@@ -11,8 +12,9 @@ class SelectTool(AbstractTool):
     Tool for selecting and moving entities and hitboxes.
     """
     
-    def __init__(self, state: EditorState):
+    def __init__(self, state: EditorState, view):
         super().__init__(state)
+        self._view = view
         self._dragging = False
         self._drag_start_pos = Vec2(0, 0)
         self._drag_start_positions = {} # Map(id -> Vec2)
@@ -45,16 +47,11 @@ class SelectTool(AbstractTool):
             modifiers = event.modifiers()
             
             # 1. Check Hitbox Interaction (if enabled)
-            # TODO: Move interaction mode to EditorState so we know if we are editing hitboxes
-            # For now, we'll try to check hitboxes if they are selectable.
-            # Assuming we can access 'show_hitboxes' or similar from state/view if needed.
-            # But currently EditorState doesn't store view options.
-            # Let's assume we always check hitboxes first if an entity is selected.
-            
-            hitbox, parent_bp = self._get_hitbox_at(world_pos)
-            if hitbox:
-                self._handle_hitbox_press(hitbox, parent_bp, world_pos)
-                return
+            if self._state.hitbox_edit_mode:
+                hitbox, parent_bp = self._get_hitbox_at(world_pos)
+                if hitbox:
+                    self._handle_hitbox_press(hitbox, parent_bp, world_pos)
+                    return
             
             # 2. Check BodyPart Interaction
             clicked_bp = self._get_bodypart_at(world_pos)
@@ -73,6 +70,9 @@ class SelectTool(AbstractTool):
         if self._dragging_hitbox:
             self._handle_hitbox_drag(world_pos)
             return
+
+        # Cursor Updates (Hover)
+        self._update_cursor_shape(world_pos)
             
         # 2. Handle Dragging BodyParts
         if self._dragging and self._state.selection.selected_body_parts:
@@ -87,7 +87,6 @@ class SelectTool(AbstractTool):
                 self._dragging_hitbox = None
                 self._resize_edge = None
                 
-            # Commit BodyPart Change
             if self._dragging:
                 if self._state.history:
                     # Check if actually moved to avoid empty undo entries?
@@ -95,10 +94,42 @@ class SelectTool(AbstractTool):
                     self._state.history.end_change()
                 self._dragging = False
                 self._drag_start_positions.clear()
+        
+        self._reset_cursor()
+
+    def _update_cursor_shape(self, world_pos: Vec2):
+        if not self._state.hitbox_edit_mode:
+            self._reset_cursor()
+            return
+
+        hitbox, parent_bp = self._get_hitbox_at(world_pos)
+        if hitbox:
+            edge = self._get_hitbox_edge(hitbox, parent_bp, world_pos)
+            if edge:
+                if edge in ['left', 'right']:
+                    self._view.setCursor(Qt.SizeHorCursor)
+                elif edge in ['top', 'bottom']:
+                    self._view.setCursor(Qt.SizeVerCursor)
+                elif edge in ['tl', 'br']:
+                    self._view.setCursor(Qt.SizeFDiagCursor)
+                elif edge in ['tr', 'bl']:
+                    self._view.setCursor(Qt.SizeBDiagCursor)
+                else:
+                    self._view.setCursor(Qt.SizeAllCursor) # Move
+                return
+        
+        self._reset_cursor()
+
+    def _reset_cursor(self):
+        self._view.setCursor(Qt.ArrowCursor)
 
     # --- Logic Helpers ---
 
     def _handle_hitbox_press(self, hitbox, parent_bp, world_pos: Vec2):
+        # Auto-select parent body part if not already selected
+        if parent_bp and not self._state.selection.is_selected(parent_bp):
+             self._state.selection.set_selection(parent_bp)
+        
         # Select Hitbox
         self._state.selection.select_hitbox(hitbox)
         
@@ -177,7 +208,7 @@ class SelectTool(AbstractTool):
         # Ideally EditorState should expose a method to notify modification if not automatic.
         # But since we modified data objects directly, we might need to emit a signal.
         # self._state.notify_entity_modified() # Hypothetical method
-        pass 
+        get_signal_hub().notify_hitbox_modified(self._dragging_hitbox) 
 
     def _handle_bodypart_drag(self, world_pos: Vec2):
         delta = world_pos - self._drag_start_pos
@@ -191,8 +222,9 @@ class SelectTool(AbstractTool):
                 bp.position.x = self._snap(new_x)
                 bp.position.y = self._snap(new_y)
                 
+                get_signal_hub().notify_bodypart_modified(bp)
+
         # self._state.notify_entity_modified()
-        pass
 
     # --- Query/Math Helpers ---
     
@@ -205,7 +237,18 @@ class SelectTool(AbstractTool):
         if not entity:
             return None
             
-        for bp in reversed(entity.body_parts):
+        # Prepare list in Render Order (Bottom to Top)
+        body_parts = list(entity.body_parts)
+        body_parts.sort(key=lambda bp: bp.z_order)
+        
+        # Handle Selection on Top
+        if self._state.selection_on_top and self._state.selection.has_selection:
+            unselected = [bp for bp in body_parts if not self._state.selection.is_selected(bp)]
+            selected = [bp for bp in body_parts if self._state.selection.is_selected(bp)]
+            body_parts = unselected + selected
+            
+        # Iterate in Reverse (Top to Bottom) to find first hit
+        for bp in reversed(body_parts):
             if not bp.visible:
                 continue
                 
@@ -239,7 +282,7 @@ class SelectTool(AbstractTool):
                 continue
             
             # If logic requires only checking selected BP hitboxes:
-            # if self._state.selection.has_selection and not self._state.selection.is_selected(bp): continue
+            if self._state.selection.has_selection and not self._state.selection.is_selected(bp): continue
             
             for hitbox in bp.hitboxes:
                 if not hitbox.enabled:

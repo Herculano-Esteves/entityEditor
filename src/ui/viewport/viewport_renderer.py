@@ -37,7 +37,7 @@ class ViewportRenderer:
         self._draw_body_parts(painter, entity)
         
         # 2. Draw Hitboxes (if enabled)
-        if self.show_hitboxes:
+        if self._state.hitbox_edit_mode:
             self._draw_hitboxes(painter, entity)
             
         # 3. Draw Pivot (if enabled)
@@ -55,12 +55,22 @@ class ViewportRenderer:
         
         # We can implement z-sort or selection-on-top here.
         body_parts = list(entity.body_parts)
+        # Sort by z-order (ascending)
+        body_parts.sort(key=lambda bp: bp.z_order)
         
-        # If selection on top logic is desired:
-        # TODO: Implement selection-on-top logic if needed. 
-        # For now, strict z-order (list order) is safer for WYSIWYG.
+        # Selection on Top Logic
+        if self._state.selection_on_top and self._state.selection.has_selection:
+            # Separate selected from unselected
+            unselected = [bp for bp in body_parts if not self._state.selection.is_selected(bp)]
+            selected = [bp for bp in body_parts if self._state.selection.is_selected(bp)]
+            
+            # Draw unselected first, then selected
+            draw_list = unselected + selected
+        else:
+            # Draw strictly by Z-order
+            draw_list = body_parts
         
-        for bp in body_parts:
+        for bp in draw_list:
             if not bp.visible:
                 continue
             
@@ -174,11 +184,20 @@ class ViewportRenderer:
         painter.setBrush(QColor(255, 255, 100))
         painter.setPen(QPen(QColor(100, 100, 100), 1 / self.zoom))
         
+        # Use float coordinates for precise handle placement (matching interaction logic)
+        # rect is integer QRect, need to be careful with -1 offset of topRight/bottomRight
+        # We want handles at exact bounds: x, x+w, y, y+h
+        
+        l = rect.x()
+        r = rect.x() + rect.width() # Not width()-1
+        t = rect.y()
+        b = rect.y() + rect.height()
+        
         corners = [
-            rect.topLeft(),
-            rect.topRight(),
-            rect.bottomLeft(),
-            rect.bottomRight()
+            QPointF(l, t),
+            QPointF(r, t),
+            QPointF(l, b),
+            QPointF(r, b)
         ]
         
         for pt in corners:

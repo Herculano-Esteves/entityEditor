@@ -1,637 +1,240 @@
-# ENTITY EDITOR - AI TECHNICAL REFERENCE
-# Last Updated: 2026-01-25
-# Python Entity Editor for Game Engine - Complete Technical Documentation
-
-## PROJECT OVERVIEW
-Desktop application for creating and editing game entity definitions with body parts, hitboxes, textures, and UV mapping.
-Framework: PySide6 (Qt6 for Python)
-Python Version: 3.x
-File Format: Binary .entdef + JSON export capability
-
-## DIRECTORY STRUCTURE
-```
-entityEditor/
-├── main.py                          # Application entry point
-├── src/
-│   ├── __init__.py
-│   ├── core/
-│   │   ├── __init__.py
-│   │   └── signal_hub.py           # Central event dispatcher (Qt signals)
-│   ├── data/
-│   │   ├── __init__.py
-│   │   ├── entity_data.py          # Core data models (Vec2, Hitbox, BodyPart, Entity)
-│   │   └── file_io.py              # Binary/JSON serialization
-│   ├── rendering/
-│   │   ├── __init__.py
-│   │   └── texture_manager.py      # Texture loading and caching
-│   ├── ui/
-│   │   ├── __init__.py
-│   │   ├── main_window.py          # Main application window
-│   │   ├── dialogs/
-│   │   │   ├── __init__.py
-│   │   │   └── uv_editor_dialog.py # Modal UV editing dialog
-│   │   ├── panels/
-│   │   │   ├── __init__.py
-│   │   │   ├── bodyparts_panel.py  # Body parts list and properties
-│   │   │   └── hitbox_panel.py     # Hitbox list and properties
-│   │   └── widgets/
-│   │       ├── __init__.py
-│   │       ├── viewport_widget.py  # Main 2D viewport with rendering
-│   │       └── uv_editor_widget.py # UV texture preview widget
-└── examples/                        # Sample entity files
-```
-
-## CORE DATA MODELS (src/data/entity_data.py)
-
-### Vec2 (@dataclass)
-- Fields: x (float), y (float)
-- Methods: to_dict(), from_dict(data)
-- Usage: Positions, sizes throughout application
-
-### UVRect (@dataclass)
-- Fields: x, y, width, height (all float, normalized 0.0-1.0)
-- Methods: to_dict(), from_dict(data), get_pixel_coords(tex_width, tex_height)
-- Purpose: Define texture region for body parts
-
-### Hitbox (@dataclass)
-- Fields:
-  * name (str)
-  * position (Vec2) - relative to parent body part
-  * size (Vec2)
-  * hitbox_type (str) - "collision", "damage", or "trigger"
-  * enabled (bool) - visibility toggle
-- Methods: to_dict(), from_dict(data)
-- Parent: Attached to BodyPart.hitboxes list
-
-### BodyPart (@dataclass)
-- Fields:
-  * name (str)
-  * position (Vec2) - world position
-  * size (Vec2) - pixel dimensions
-  * texture_path (str)
-  * uv_rect (UVRect)
-  * flip_x (bool) - horizontal flip
-  * flip_y (bool) - vertical flip
-  * hitboxes (List[Hitbox])
-  * uv_tile_id (Optional[str])
-  * pixel_scale (int) - sprite scale multiplier (1-16)
-  * rotation (float) - degrees
-  * z_order (int) - draw order (higher = front)
-  * visible (bool) - visibility toggle
-- Methods: to_dict(), from_dict(data)
-
-### Entity (@dataclass)
-- Fields:
-  * name (str)
-  * entity_id (str) - UUID
-  * pivot (Vec2) - entity center point
-  * body_parts (List[BodyPart])
-  * entity_hitboxes (List[Hitbox])
-  * version (str)
-  * tags (List[str])
-  * metadata (Dict[str, Any])
-- Methods: to_dict(), from_dict(data), get_body_part(name), add_body_part(bp), remove_body_part(bp), get_sorted_body_parts()
-
-## SIGNAL HUB ARCHITECTURE (src/core/signal_hub.py)
-
-### Purpose
-Central event dispatcher using Qt signals for decoupled communication between UI components.
-Singleton pattern via get_signal_hub() function.
-
-### Signals Available
-```python
-# Entity signals
-entity_loaded = Signal(object)
-entity_modified = Signal()
-entity_saved = Signal(str)
-
-# Body part signals
-bodypart_selected = Signal(object)
-bodypart_added = Signal(object)
-bodypart_removed = Signal(object)
-bodypart_modified = Signal(object)
-bodypart_reordered = Signal()
-
-# Hitbox signals
-hitbox_selected = Signal(object)
-hitbox_added = Signal(object)
-hitbox_removed = Signal(object)
-hitbox_modified = Signal(object)
-hitbox_edit_mode_changed = Signal(bool)
-
-# Viewport signals
-viewport_selection_changed = Signal(object)
-viewport_transform_changed = Signal()
-snap_value_changed = Signal(float)
-
-# Undo/Redo signals
-undo_redo_state_changed = Signal(bool, bool, str, str)  # can_undo, can_redo, undo_desc, redo_desc
-
-# UV/Texture signals
-texture_loaded = Signal(str)
-uv_modified = Signal(object)
-```
-
-### Notify Methods Pattern
-Each signal has corresponding notify_* method:
-- notify_bodypart_selected(bodypart)
-- notify_bodyparts_selection_changed(selected_list)
-- notify_bodypart_modified(bodypart)
-- notify_undo_redo_state_changed(...)
-- etc.
-
-Most modify methods automatically emit entity_modified signal.
-
-## UNDO/REDO ARCHITECTURE (src/core/state_history.py)
-
-### Overview
-Replaced legacy Command pattern with a robust State-Based Undo system using snapshots.
-
-### Key Components
-- **StateHistory:** Manages the stack of entity states (serialized to JSON/dict).
-- **HistoryManager:** High-level controller usually accessible via MainWindow.
-
-### Transaction Pattern
-```python
-# 1. Start transaction
-history_manager.begin_change("Description of change")
-
-# 2. Modify entity data
-entity.body_parts[0].position.x += 10
-
-# 3. Commit transaction
-history_manager.end_change()
-```
-
-### Features
-- **Atomic Transactions:** Multiple edits (e.g., group moves) are captured as single undo steps.
-- **Change Verification:** `end_change()` can be cancelled if no actual data changed.
-- **Robustness:** Eliminates "inverse command" logic errors by simply restoring previous states.
-
-## UI ARCHITECTURE
-
-### MainWindow (src/ui/main_window.py)
-- QMainWindow with menu bar, toolbar, status bar
-- Layout: Central viewport widget + docked panels
-- Toolbar Features:
-  * Grid snap dropdown (Off, 1px, 2px, 4px, 8px, 16px, 32px, Custom)
-    - Uses Qt.ClickFocus to prevent keyboard search from intercepting spinbox input
-  * Zoom controls
-- File Menu: New, Open, Save, Save As, Export as JSON, Recent Files
-- Signal Connections: Connects to signal hub for entity events
-
-### ViewportWidget (src/ui/widgets/viewport_widget.py)
-**Purpose:** Main 2D rendering area for entity preview and interaction
-
-**State Variables:**
-- _entity: Current Entity object
-- _selected_bodypart: Currently selected body part
-- _selected_hitbox: Currently selected hitbox
-- _zoom: Viewport zoom level (0.1-10.0)
-- _view_center: QPointF for pan offset
-- _snap_value: Grid snap value in pixels (0 = off)
-- _hitbox_edit_mode: Boolean for hitbox editing mode
-- _dragging_hitbox: Currently dragged/resized hitbox
-- _resize_edge: String identifier for resize edge ('tl', 'tr', 'bl', 'br', 'left', 'right', 'top', 'bottom')
-- _selected_bodyparts: List[BodyPart] for multi-selection
-- _rect_selecting: Boolean for rectangle selection mode
-- _rect_start_pos / _rect_current_pos: Points for selection rectangle
-
-
-**Key Methods:**
-- paintEvent(): Custom QPainter rendering
-- _draw_entity(painter): Renders all body parts with transformations
-- _draw_bodypart(painter, bp): Renders single body part with pixel_scale, rotation, flipping
-- _draw_hitbox(painter, hitbox, offset): Renders hitbox with type-based coloring
-- _get_bodypart_at(world_pos): Hit detection for body parts
-- _get_hitbox_at(world_pos): Hit detection for hitboxes (scoped to selected body part)
-- _get_hitbox_edge(hitbox, parent_bp, world_pos): Detects edge/corner for resize
-- _screen_to_world(screen_pos): Coordinate transformation
-- _world_to_screen(world_pos): Inverse coordinate transformation
-- _update_cursor_for_hover(screen_pos): Dynamic cursor changes for resize indicators
-- _snap_to_grid(value): Snaps float value to grid if enabled
-- _snap_to_grid_int(value): Snaps value to grid and returns integer (eliminates redundant rounding)
-
-**Mouse Interaction:**
-- Left click: Select body part/hitbox
-- Left drag: Move body part (always pixel-snapped) or move/resize hitbox in edit mode
-- Middle/Right drag: Pan viewport
-- Scroll wheel: Zoom
-
-**Rendering Features:**
-- Pixel-perfect rendering (Qt.FastTransformation disabled for crisp pixel art)
-- Body part transformations: pixel_scale, rotation, flip_x, flip_y
-- Hitbox visibility: Only shows hitboxes from selected body part (or all if none selected)
-- Selection highlight: Yellow outline for selected hitbox in edit mode
-- Resize handles: 4 corner circles on selected hitbox when edit mode active
-
-**Signal Connections:**
-- entity_loaded, bodypart_selected, bodypart_modified, bodypart_added, bodypart_removed, bodypart_reordered
-- hitbox_selected, hitbox_modified, hitbox_edit_mode_changed
-- snap_value_changed, bodypart_show_above_changed
-- bodyparts_selection_changed (Multi-select)
-
-**Critical Fix (2026-01-24):**
-- Added missing `hitbox_modified` signal connection - hitbox changes from UI now update viewport immediately
-- Added `_snap_to_grid_int()` helper to consolidate snap+round operations
-
-### BodyPartsPanel (src/ui/panels/bodyparts_panel.py)
-**Purpose:** List and edit body parts
-
-**UI Components:**
-- _bodyparts_list: QListWidget with custom item widgets (ExtendedSelection mode enabled)
-- Custom Item Widget Structure:
-  * Eye button (👁 visible / ⚫ hidden)
-  * QLabel with body part name
-- Property Editors (enabled when body part selected):
-  * Name (QLineEdit) - editingFinished signal
-  * Position X/Y (QSpinBox) - integer pixels
-  * Size Width/Height (QSpinBox) - integer pixels
-  * Pixel Scale (QSpinBox 1-16x)
-  * Z-Order (QSpinBox -100 to 100)
-  * Rotation (QSpinBox -360° to 360°)
-  * Flip X/Y (QCheckBox)
-  * Texture Path (QLineEdit + Browse button)
-  * Edit UV Map button (opens UVEditorDialog)
-
-**Buttons:**
-- Add: Creates new body part (default z_order=0)
-- Remove: Deletes selected body part
-- Rename: Focuses name field
-- Duplicate: Deep copy with incremented name, offset position
-
-**Important Methods:**
-- _refresh_list(): Rebuilds list with custom widgets and eye icons
-- _toggle_visibility(bodypart): Toggles visible field
-- _on_name_changed(): Updates label widget only (no list refresh to prevent deselection)
-- _on_property_changed(): Updates selected body part from UI inputs
-- _on_external_modification(bodypart): Handles external changes without list refresh
-
-### HitboxPanel (src/ui/panels/hitbox_panel.py)
-**Purpose:** List and edit hitboxes for selected body part
-
-**UI Components:**
-- Info label: Shows selected body part context
-- _hitbox_list: QListWidget with custom item widgets
-- Custom Item Widget Structure:
-  * Eye button (👁 enabled / ⚫ disabled)
-  * Colored type indicator (🔴 collision, 🟡 damage, 🟢 trigger)
-  * QLabel with hitbox name
-- Edit Hitboxes checkbox: Toggles viewport hitbox edit mode (disabled when no body part selected)
-- Property Editors:
-  * Name (QLineEdit) - editingFinished signal
-  * Type (QComboBox: collision, damage, trigger)
-  * Position X/Y (QSpinBox) - integer pixels, relative to parent body part
-  * Size Width/Height (QSpinBox) - integer pixels
-
-**Buttons:**
-- Add: Creates new hitbox with parent's rendered size as default
-- Duplicate: Deep copy with incremented name, offset position
-- Remove: Deletes selected hitbox
-
-**Important Behaviors:**
-- Only shows hitboxes from currently selected body part
-- Edit mode checkbox is a persistent toggle (stays checked regardless of selection)
-- Edit mode applies to all body parts when active
-- Default hitbox size = parent body part size × pixel_scale
-
-**Important Methods:**
-- _refresh_list(): Rebuilds list with custom widgets and eye icons (preserves selection)
-- _on_external_modification(hitbox): Updates properties without list refresh to prevent focus loss
-- _on_property_changed(): Updates hitbox from UI, fires on valueChanged for instant viewport updates
-- _toggle_visibility(hitbox): Toggles enabled field
-
-### UVEditorDialog (src/ui/dialogs/uv_editor_dialog.py)
-**Purpose:** Modal dialog for precise UV editing
-
-**UI Layout:**
-- Left: UVEditorWidget (visual texture + draggable UV rectangle)
-- Right: Dual coordinate inputs
-  * UV Coordinates (QDoubleSpinBox 0.0-1.0 normalized)
-  * Pixel Coordinates (QSpinBox absolute pixels)
-  * Two-way real-time synchronization
-- Texture browse button
-- OK/Cancel buttons
-
-**Features:**
-- Auto-calculates and updates body part size to match UV region pixels
-- Runs auto-fix on dialog open to sync outdated sizes
-- Visual resize handles with smart scaling/hiding
-- Pixel-perfect snapping enforced
-
-### UVEditorWidget (src/ui/widgets/uv_editor_widget.py)
-**Implementation:** Direct QPainter rendering (not QGraphicsView)
-
-**Rendering:**
-- Background texture with Qt.FastTransformation
-- UV rectangle overlay with resize handles
-- Handle scaling inversely with zoom
-- Handles hidden if UV rect < 20x20 pixels
-
-**Interaction:**
-- Drag rectangle body to move
-- Drag handles to resize
-- Pixel snapping enforced on all operations
-
-## FILE I/O (src/data/file_io.py)
-
-### EntitySerializer
-**Static Methods:**
-- save_binary(entity, filepath): Saves to .entdef binary format with struct packing
-- load_binary(filepath): Loads from .entdef binary format
-- save_json_debug(entity, filepath): Exports human-readable JSON
-- load_json(filepath): Loads from JSON format
-
-**Binary Format Specification:**
-- Header: Magic bytes, version number
-- Body: Struct-packed binary data
-- Ensures compact file size and fast loading
-
-## KEY FEATURES IMPLEMENTATION DETAILS
-
-### Pixel-Perfect Coordinate System
-- ALL position/size inputs use QSpinBox (integers only)
-- Viewport dragging always rounds to whole pixels: `round(value)`
-- Grid snapping applied on top: `round(value / snap) * snap`
-- No QDoubleSpinBox for positions/sizes to enforce pixel precision
-
-### Grid Snapping System
-**Location:** MainWindow toolbar
-**Values:** Off, 1, 2, 4, 8, 16, 32, Custom
-**Behavior:** Always active when value > 0 (no Ctrl key required)
-**Implementation:**
-```python
-def _snap_to_grid(value: float) -> float:
-    if snap_value <= 0:
-        return value
-    return round(value / snap_value) * snap_value
-
-def _snap_to_grid_int(value: float) -> int:
-    """Snap value to grid and return integer (eliminates redundant rounding)."""
-    if snap_value > 0:
-        return int(round(value / snap_value) * snap_value)
-    return int(round(value))
-```
-
-### Pixel Scale Multiplier
-**Field:** BodyPart.pixel_scale (int, default 1, range 1-16)
-**Purpose:** Scale sprite rendering without changing UV region
-**Auto-sizing Logic:**
-1. When texture assigned or UV modified:
-   - Calculate pixel dimensions of UV region
-   - Set body part size = UV pixels (1:1 mapping)
-2. Rendering applies pixel_scale as multiplier
-3. Rendered size = size × pixel_scale
-
-### UV Flipping
-**Fields:** BodyPart.flip_x, BodyPart.flip_y (bool)
-**Implementation:** QTransform applied during paintEvent
-```python
-if bp.flip_x or bp.flip_y:
-    transform = QTransform()
-    if bp.flip_x:
-        transform.scale(-1, 1)
-    if bp.flip_y:
-        transform.scale(1, -1)
-    sub_pixmap = sub_pixmap.transformed(transform)
-```
-
-### Body Part Rotation
-**Field:** BodyPart.rotation (float, degrees, range -360 to 360)
-**Implementation:**
-```python
-painter.save()
-center_x = bp.position.x + render_width / 2
-center_y = bp.position.y + render_height / 2
-painter.translate(center_x, center_y)
-painter.rotate(bp.rotation)
-painter.translate(-center_x, -center_y)
-# draw sprite
-painter.restore()
-```
-
-### Visibility Toggle System
-**Fields:** BodyPart.visible, Hitbox.enabled (both bool)
-**UI:** Eye button icons (👁 = visible/enabled, ⚫ = hidden/disabled)
-**Implementation:** Custom QListWidget items with embedded QPushButton
-**Update Pattern:**
-```python
-def _toggle_visibility(item):
-    item.visible = not item.visible
-    signal_hub.notify_modified(item)
-    # Update only the button icon, not entire list
-    widget.findChild(QPushButton).setText("👁" if item.visible else "⚫")
-```
-
-### Hitbox Editing Mode
-**Trigger:** Checkbox in HitboxPanel
-**Signal:** hitbox_edit_mode_changed(bool)
-**Viewport Behavior Changes:**
-- Hit detection prioritizes hitboxes over body parts
-- Shows resize handles on selected hitbox
-- Edge/corner detection for resize operations
-- Dynamic cursor changes (↔ ↕ ↖↘ ↗↙ ✥)
-
-**Resize Implementation:**
-```python
-# Edge detection with grab_distance = 8 / zoom
-# Corner priority: tl, tr, bl, br
-# Edge fallback: left, right, top, bottom
-# Resize applies to both position and size for left/top edges
-# Grid snapping applies to all resize operations
-```
-
-### Body Part Scoped Hitbox Visibility
-**Rule:** Only hitboxes from selected body part are visible/interactive
-**Implementation:**
-- _get_hitbox_at() filters by _selected_bodypart
-- _draw_hitbox() only draws if bp == _selected_bodypart or _selected_bodypart is None
-
-### Duplicate Functionality
-**Smart Naming:**
-```python
-if name ends with digit:
-    increment that digit (e.g., "Torso2" → "Torso3")
-else:
-    append "2" (e.g., "Head" → "Head2")
-```
-**Position Offset:** +5 pixels X and Y
-**Selection:** Auto-select the new duplicate
-
-### Name Editing Without Deselection
-**Problem:** List refresh on every keystroke caused deselection
-**Solution:**
-- Name field uses `editingFinished` signal (not `textChanged`)
-- On name change completion: Find QLabel widget in custom item, update text directly
-- No list rebuild → no deselection
-```python
-current_item = list_widget.currentItem()
-widget = list_widget.itemWidget(current_item)
-label = widget.findChild(QLabel)
-label.setText(new_name)
-```
-
-### Property Editing Without Focus Loss
-**Problem:** List refresh on property changes caused spinboxes to lose focus while typing
-**Solution (Both Panels):**
-- Property change signals connected to `_on_external_modification()` instead of `_refresh_list()`
-- `_on_external_modification()` only updates UI from data model if item is currently selected
-- No list rebuild during property edits → no focus loss
-- Instant viewport updates via `valueChanged` signal without keyboard tracking interference
-```python
-def _on_external_modification(self, item):
-    """Handle external modification without refreshing list."""
-    if item == self._selected_item:
-        self._update_properties()  # Update UI only, no list rebuild
-```
-
-**Critical for Hitbox Panel:**
-- All position/size spinboxes use default keyboard tracking (enabled)
-- Grid snap combo box uses `Qt.ClickFocus` to prevent keyboard search from stealing keystrokes
-- This allows instant viewport updates while typing without combo box interference
-
-## RENDERING PIPELINE
-
-### Viewport Paint Event Flow
-1. Clear background (dark gray)
-2. Setup world transform (center + zoom + pan)
-3. Draw grid if enabled
-4. Draw entity:
-   a. Sort body parts by z_order
-   b. For each visible body part:
-      - Load texture from TextureManager
-      - Extract UV sub-region as QPixmap
-      - Apply flipping if needed
-      - Save painter state
-      - Apply rotation transform if needed
-      - Draw scaled pixmap (size × pixel_scale)
-      - Restore painter state
-      - Draw selection highlight if selected
-      - Draw hitboxes (only if this bp is selected or none selected)
-5. Draw UI overlay (zoom level, coordinates)
-
-### Texture Rendering Settings
-**Critical:** All texture rendering uses Qt.FastTransformation or disables SmoothPixmapTransform
-**Affected Components:**
-- ViewportWidget.paintEvent()
-- UVEditorWidget rendering
-- TextureBackgroundItem (if using QGraphicsView)
-
-**Reason:** Prevents blurry pixel art, maintains crisp edges at all zoom levels
-
-## ADVANCED INTERACTION PATTERNS
-
-### Cursor Feedback System
-**Location:** ViewportWidget._update_cursor_for_hover()
-**Triggers:** mouseMoveEvent when not actively dragging
-**Cursor Types:**
-- Qt.SizeFDiagCursor: ↖↘ (tl, br corners)
-- Qt.SizeBDiagCursor: ↗↙ (tr, bl corners)
-- Qt.SizeHorCursor: ↔ (left, right edges)
-- Qt.SizeVerCursor: ↕ (top, bottom edges)
-- Qt.SizeAllCursor: ✥ (over hitbox body)
-- Qt.ArrowCursor: default
-
-### Hitbox Resize Edge Detection
-**Grab Distance:** 8 pixels in world space (adjusts with zoom)
-**Priority Order:**
-1. Check all 4 corners first (higher priority)
-2. Then check 4 edges
-3. Return None if not near any edge/corner
-
-**Corner Identifiers:** 'tl', 'tr', 'bl', 'br'
-**Edge Identifiers:** 'left', 'right', 'top', 'bottom'
-
-### Coordinate Transformation Math
-```python
-# Screen to World
-center = QPointF(width/2, height/2)
-offset_x = screen_pos.x() - center.x()
-offset_y = screen_pos.y() - center.y()
-world_x = view_center.x() + offset_x / zoom
-world_y = view_center.y() + offset_y / zoom
-
-# World to Screen (inverse)
-offset_x = (world_pos.x() - view_center.x()) * zoom
-offset_y = (world_pos.y() - view_center.y()) * zoom
-screen_x = center.x() + offset_x
-screen_y = center.y() + offset_y
-```
-
-## COMMON PATTERNS AND CONVENTIONS
-
-### Signal Handler Naming
-- External events: `_on_external_selection(item)`
-- UI events: `_on_button_clicked()`, `_on_value_changed()`
-- Signal emission: Via signal_hub.notify_*() methods
-
-### Property Update Flow
-1. User modifies UI widget
-2. Signal fires (valueChanged, editingFinished, etc.)
-3. Handler updates data model
-4. Handler calls signal_hub.notify_*_modified()
-5. Signal hub emits modification signals
-6. Other panels receive signals and update if needed
-7. Viewport receives signal and calls update() for repaint
-
-### List Widget Custom Items Pattern
-```python
-item = QListWidgetItem()
-item.setData(Qt.UserRole, data_object)
-widget = QWidget()
-layout = QHBoxLayout(widget)
-# Add eye button, labels, etc to layout
-item.setSizeHint(widget.sizeHint())
-list_widget.addItem(item)
-list_widget.setItemWidget(item, widget)
-```
-
-### Blocking Signals Pattern
-```python
-widget.blockSignals(True)
-widget.setValue(new_value)  # Won't trigger valueChanged
-widget.blockSignals(False)
-```
-Used in _update_properties() to prevent feedback loops
-
-## DEPENDENCIES
-- PySide6: Qt6 GUI framework
-- Python 3.x standard library: dataclasses, struct, pathlib, uuid, json, copy, re
-
-## FILE FORMAT VERSION
-Current: 1.0
-Extensible via Entity.metadata dictionary
-Backwards compatibility via default values in from_dict() methods
-
-## KNOWN DESIGN DECISIONS
-
-1. **Modal UV Editor:** Chosen over dockable for focused workflow, less UI clutter
-2. **Direct QPainter:** Used instead of QGraphicsView for viewport/UV editor for reliable, predictable rendering
-3. **Integer Coordinates:** All positions/sizes enforce integers via QSpinBox for pixel-perfect precision
-4. **Always-On Grid Snap:** No Ctrl key required, simplified user interaction
-5. **Body Part Scoped Hitboxes:** Prevents accidental interaction with other parts' hitboxes
-6. **Separate Name Handler:** editingFinished instead of textChanged prevents deselection
-7. **External Modification Handler:** Using _on_external_modification instead of _refresh_list prevents focus loss during property editing
-8. **Combo Box Focus Policy:** Grid snap combo uses ClickFocus to prevent keyboard search from intercepting spinbox input
-9. **Missing Signal Connection Fixed:** ViewportWidget now listens to hitbox_modified signal (critical bug fix 2026-01-24)
-10. **Consolidated Snap+Round:** _snap_to_grid_int() eliminates redundant int(round()) calls
-11. **Auto-Size on UV Change:** Maintains 1:1 pixel mapping, makes pixel_scale behave as true multiplier
-12. **Custom List Items:** Allows eye icons and rich formatting without QItemDelegate complexity
-13. **State-Based Undo:** Switch from Command pattern to State Snapshots (2026-01-25) eliminates complex inverse logic and ensures robust multi-step undo.
-14. **Multi-Selection:** Implemented via standard Qt ExtendedSelection and synced lists to support group operations.
-
-## TESTING WORKFLOW
-1. Launch: `python main.py`
-2. Create entity: File → New
-3. Add body part: Body Parts Panel → Add
-4. Assign texture: Properties → Browse
-7. Enable edit mode: Hitbox Panel → Edit Hitboxes checkbox
-8. Save: File → Save As → .entdef
-9. Export: File → Export as JSON
-
-## EXTENSION POINTS
-- Entity.metadata: Custom fields without changing core data model
-- BodyPart.uv_tile_id: Future UV tile library system
-- Signal hub: Add new signals for new features
-- Panels: Create new QWidget panels and dock in MainWindow
-- File formats: Add new serializers in EntitySerializer
+
+AI_PROJECT_REFERENCE.txt
+
+PROJECT: Entity Editor
+VERSION: Technical Reference 1.0
+DATE: 2026-01-25
+
+--------------------------------------------------------------------------------
+1. PROJECT OVERVIEW
+--------------------------------------------------------------------------------
+
+What the tool is:
+The Entity Editor is a standalone desktop application built with Python and PySide6 (Qt). It allows game developers to define 2D game "Entities" composed of multiple visual "Body Parts" (sprites) and logical "Hitboxes".
+
+What problem it solves:
+It decouples the definition of complex 2D compound objects from the game engine. Instead of hardcoding relative positions, uvs, and collision boxes in code or using a generic engine editor, this tool provides a specialized environment for pixel-perfect assembly of character rigs, props, or interactive objects.
+
+Development Stage:
+The project is in an active "Alpha" state.
+- Core systems (Data, Rendering, UI, IO) are implemented and functional.
+- Recent feature pushes have added usability constraints (Z-order, naming uniqueness, isolation).
+- Architectural transitions are in progress (e.g., centralizing state management).
+- Refactoring is ongoing to ensure maintainability over performance.
+
+--------------------------------------------------------------------------------
+2. HIGH-LEVEL ARCHITECTURE
+--------------------------------------------------------------------------------
+
+Folder Structure:
+src/
+  core/         -> Application logic, state management, command pattern (Undo/Redo), signaling.
+  data/         -> Pure data models (dataclasses) and serialization logic.
+  rendering/    -> Resources management (TextureManager).
+  ui/           -> All Qt-based interface code.
+    dialogs/    -> Modal windows (UV Editor).
+    panels/     -> Dockable property editors (BodyParts, Hitboxes).
+    viewport/   -> The 2D canvas (Widget, Renderer, Tools, Controller).
+    widgets/    -> Reusable custom widgets.
+
+Major Systems:
+
+1. State Management (src.core.state)
+   - 'EditorState' is the singleton-like source of truth.
+   - It holds the 'Entity', manages 'Selection', and 'HistoryService'.
+   - It acts as the bridge between logic and UI, partially replacing the legacy 'SignalHub'.
+
+2. Signal System (src.core.signal_hub)
+   - A central event bus used to decouple components.
+   - UI components emit signals here; other components listen.
+   - NOTE: This is currently being superseded by direct signals in 'EditorState', resulting in a mix of patterns.
+
+3. Undo/Redo (src.core.command)
+   - Implements the Command Pattern.
+   - All model mutations are encapsulated in Command classes (e.g., AddBodyPartCommand).
+   - 'HistoryService' manages the undo stack.
+
+4. Rendering (src.ui.viewport.viewport_renderer)
+   - Uses QPainter for immediate mode rendering.
+   - Decoupled from the generic QWidget logic.
+
+Data Flow:
+User Action (UI) -> Tool/Panel Logic -> Creates Command -> HistoryService Executes Command -> Model Updated -> Signal Emitted -> UI Refreshes.
+
+--------------------------------------------------------------------------------
+3. DATA MODELS
+--------------------------------------------------------------------------------
+
+Defined in: src.data.entity_data
+
+1. Entity
+   - Root container.
+   - Properties: Name, Pivot (Vec2), ID (UUID).
+   - Children: List[BodyPart], List[Hitbox] (Entity-level hitboxes).
+
+2. BodyPart
+   - A visual component.
+   - Properties: Position (Vec2), Size (Vec2), Texture Path, UVRect, Z-Order (int), Visibility (bool).
+   - Transformation: Rotation (float), Pixel Scale (int), Flip X/Y (bool).
+   - Children: List[Hitbox] (attached to this part).
+
+3. Hitbox
+   - A logic/collision rectangle.
+   - Properties: Name, Position (relative), Size, Type (collision/damage/trigger), Enabled (bool).
+   - CONSTRAINTS: Position and Size are STRICT INTEGERS for pixel-perfect logic.
+
+4. UVRect
+   - Normalized coordinates (0.0 - 1.0) defining the texture sub-region.
+
+5. Vec2
+   - Float-based vector class for positions and sizes.
+
+--------------------------------------------------------------------------------
+4. UI ARCHITECTURE
+--------------------------------------------------------------------------------
+
+Main Window (src.ui.main_window):
+- Uses QMainWindow.
+- Central Widget: ViewportWidget.
+- Dock Widgets: BodyPartsPanel (Right), HitboxPanel (Right/Bottom).
+
+Viewport System (src.ui.viewport):
+- ViewportWidget: Handles Qt events (paint, mouse, key).
+- ViewportRenderer: Pure logic class that paints the Entity state onto a QPainter.
+- SelectTool: Handles mouse interaction logic (hit testing, dragging).
+- ViewportController: Connects the Widget to the State/SignalHub.
+
+Interactions:
+- Mouse: Left Click to Select, Drag to Move/Resize.
+- Tools: Currently only "Select Tool" is fully implemented.
+- Selection behavior mimics rendering order (WYSIWYG).
+
+--------------------------------------------------------------------------------
+5. COORDINATE SYSTEMS
+--------------------------------------------------------------------------------
+
+1. World Space (Entity Space)
+   - Origin (0,0) is the Entity's Pivot point.
+   - Y-Axis increases downwards (Screen coordinates).
+   - Units: "Virtual Pixels".
+
+2. Body Part Space
+   - Position is relative to World Space Origin.
+   - Rotation is around the Body Part's geometric center (calculated at render time).
+
+3. Hitbox Space
+   - Position (x,y) is relative to the Parent Body Part's top-left corner (position).
+   - Units: strict integer pixels.
+
+4. Texture Space (UVs)
+   - Normalized (0.0 to 1.0).
+   - (0,0) is Top-Left of the texture image.
+
+--------------------------------------------------------------------------------
+6. FILE I/O
+--------------------------------------------------------------------------------
+
+Handled in: src.data.file_io
+
+Current Format: Binary (.entdef)
+- Uses Python 'struct' for packing data.
+- Header string identifier.
+- Sequential packing of Entity props, then BodyParts count, then BodyParts, etc.
+
+Export: JSON
+- Supports debug/interchange export to human-readable JSON.
+
+Saving/Loading Pipeline:
+- State.entity -> to_dict() -> JSON/Binary Packer -> Disk.
+- Disk -> Unpack -> from_dict() -> State.entity.
+
+Limitations:
+- No version migration logic implemented yet. Changing data structure breaks old files.
+- Texture paths are stored as strings; relative path logic is basic.
+
+--------------------------------------------------------------------------------
+7. CURRENT CAPABILITIES
+--------------------------------------------------------------------------------
+
+Functional:
+- Adding/Removing/Duplicating Body Parts and Hitboxes.
+- Transforming Body Parts (Move, Resize, Rotate, Scale, Flip).
+- Editing UVs via visual dialog.
+- Texture loading (BMP, PNG, JPG).
+- Z-Order sorting and reordering via Drag-and-Drop in list.
+- "Selection on Top" mode for easier editing of layered parts.
+- Isolation Mode ("Solo") for Body Parts.
+- Hitbox visibility toggling.
+- Undo/Redo for all structural and property changes.
+- Naming unique enforcement (automatic _copyN suffixing).
+
+Partially Functional:
+- Entity-level Hitboxes (defined in data, but UI primarily focuses on BodyPart hitboxes).
+- Zoom/Pan (Basic implementation exists).
+
+--------------------------------------------------------------------------------
+8. KNOWN ISSUES & MISTAKES
+--------------------------------------------------------------------------------
+
+Architectural Flaws:
+- SignalHub vs EditorState: There is split reliability on where signals come from. Some parts listen to Command execution, others to SignalHub. Ideally, EditorState should be the sole emitter.
+- Direct Model Mutation: In some interactive tools (like SelectTool dragging), the model (BodyPart) is mutated directly, then a signal is emitted. This bypasses the Command pattern during the drag (for performance), which is acceptable, but "End Drag" must commit a Command to history properly.
+
+Bugs/Inconsistencies:
+- List Scroll Reset: Fixed recently, but relies on manual save/restore in UI code, which is brittle.
+- Duplication Offset: Was removed based on user feedback, duplicates now stack directly on top, which can be confusing visually without the list selection change.
+
+Technical Debt:
+- The `SelectTool` iterates body parts in reverse render order to find click targets. This logic duplicates the Renderer's sort logic. If Renderer changes sorting (e.g., Layer support), SelectTool must be manually updated.
+- `ViewportController` is somewhat anemic; logic leaks into `ViewportWidget` and `SelectTool`.
+
+--------------------------------------------------------------------------------
+9. DESIGN PHILOSOPHY
+--------------------------------------------------------------------------------
+
+1. Pixel Precision Over Smoothness
+   - Integers are enforced for positions and sizes.
+   - Snapping logic is aggressive.
+   - Anti-aliasing is explicitly disabled for textures to support pixel art workflows.
+
+2. WYSIWYG Selection
+   - If you see it on top, you select it.
+   - "Selection on Top" mode breaks physical Z-order to aid editing, but interaction logic adapts to match this visual lie.
+
+3. Strict Naming
+   - No two parts can share a name.
+   - The system aggressively renames to avoid conflicts/ambiguity, which aids later export/runtime logic.
+
+4. Modularity
+   - Panels are self-contained.
+   - Renderer is stateless (fed data).
+   - Tools are state machines.
+
+--------------------------------------------------------------------------------
+10. EXTENSION GUIDELINES
+--------------------------------------------------------------------------------
+
+How to add a new property (e.g., Opacity):
+1. DATA: Add `opacity: float = 1.0` to `BodyPart` dataclass in `src.data.entity_data`. Update `to_dict`/`from_dict`.
+2. COMMAND: Update `ModifyBodyPartCommand` in `src.core.command` to handle the new key (generic state application usually handles this via setattr, but verify).
+3. UI: Add QSpinBox/Slider to `BodyPartsPanel`.
+4. LOGIC: Connect UI signal to a handler that constructs a `ModifyBodyPartCommand`.
+5. RENDER: Update `ViewportRenderer` to apply opacity to the QPainter/QPixmap.
+
+Where NOT to add logic:
+- Do not put business logic in `ViewportWidget`. It should only route events.
+- Do not modify data models directly from UI Panels without going through `EditorState` or `Commands` (unless it's a transient drag operation).
+
+--------------------------------------------------------------------------------
+11. DEVELOPMENT ROADMAP (Inferred)
+--------------------------------------------------------------------------------
+
+Immediate priorities:
+1. Complete the migration from `SignalHub` to `EditorState` signals to remove the hybrid architecture.
+2. Refactor `SelectTool` hit detection to use a shared "RenderSorter" helper to eliminate logic duplication with `ViewportRenderer`.
+3. Implement Entity-level Hitbox UI management (currently obscure).
+
+Future Features:
+- Animation Timeline: The structure (Parts + Transforms) is ready for keyframing.
+- Texture Atlas Support: `UVTile` data classes exist but are underutilized.
+- Skeletal Binding: Parent/Child relationships between BodyParts (currently flat list).
