@@ -134,6 +134,9 @@ class ViewportWidget(QWidget):
         view_rect = QRectF() 
         self._renderer.render(painter, view_rect)
         
+        # Draw Tool Overlay
+        self._controller.render_tool(painter)
+        
         painter.restore()
         
         # Draw Overlay (Zoom level etc)

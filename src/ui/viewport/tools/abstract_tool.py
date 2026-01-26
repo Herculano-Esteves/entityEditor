@@ -46,3 +46,10 @@ class AbstractTool(QObject):
     def update_cursor(self, event: QMouseEvent, world_pos):
         """Update cursor based on mouse position."""
         pass
+
+    def render(self, painter):
+        """
+        Render tool-specific overlays.
+        :param painter: QPainter (transformed to world space)
+        """
+        pass

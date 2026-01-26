@@ -47,3 +47,8 @@ class ViewportController(QObject):
             world_pos = self._view.screen_to_world(event.position())
             self._active_tool.mouse_release(event, world_pos)
             self._view.update()
+
+    def render_tool(self, painter):
+        """Render the active tool."""
+        if self._active_tool:
+            self._active_tool.render(painter)

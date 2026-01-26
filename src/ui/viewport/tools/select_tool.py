@@ -1,6 +1,6 @@
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QMouseEvent, QKeyEvent
+from PySide6.QtCore import Qt, QRectF
+from PySide6.QtGui import QMouseEvent, QKeyEvent, QPainter, QPen, QColor
 
 from src.core.state.editor_state import EditorState
 from src.core import get_signal_hub
@@ -16,6 +16,12 @@ class SelectTool(AbstractTool):
         super().__init__(state)
         self._view = view
         self._dragging = False
+        
+        # Box Selection State
+        self._is_box_selecting = False
+        self._box_start_pos = Vec2(0, 0)
+        self._box_current_pos = Vec2(0, 0)
+        
         self._drag_start_pos = Vec2(0, 0)
         self._drag_start_positions = {} # Map(id -> Vec2)
         
@@ -37,6 +43,7 @@ class SelectTool(AbstractTool):
         
     def _reset_state(self):
         self._dragging = False
+        self._is_box_selecting = False
         self._dragging_hitbox = None
         self._dragging_hitbox_parent = None
         self._resize_edge = None
@@ -58,12 +65,14 @@ class SelectTool(AbstractTool):
             if clicked_bp:
                 self._handle_bodypart_press(clicked_bp, modifiers, world_pos)
             else:
-                # Deselect if clicking empty space (unless Ctrl is held?)
+                # 3. Box Selection Start
                 if not (modifiers & Qt.ControlModifier):
-                    # Deselect BodyParts
                     self._state.selection.clear_selection()
-                    # Deselect Hitbox
                     self._state.selection.deselect_hitbox()
+                
+                self._is_box_selecting = True
+                self._box_start_pos = world_pos
+                self._box_current_pos = world_pos
                 
     def mouse_move(self, event: QMouseEvent, world_pos: Vec2):
         # 1. Handle Dragging Hitbox
@@ -73,8 +82,13 @@ class SelectTool(AbstractTool):
 
         # Cursor Updates (Hover)
         self._update_cursor_shape(world_pos)
+        
+        # 2. Handle Box Selection
+        if self._is_box_selecting:
+            self._box_current_pos = world_pos
+            return
             
-        # 2. Handle Dragging BodyParts
+        # 3. Handle Dragging BodyParts
         if self._dragging and self._state.selection.selected_body_parts:
             self._handle_bodypart_drag(world_pos)
             
@@ -94,8 +108,63 @@ class SelectTool(AbstractTool):
                     self._state.history.end_change()
                 self._dragging = False
                 self._drag_start_positions.clear()
+            
+            # Commit Box Selection
+            if self._is_box_selecting:
+                self._handle_box_selection(event.modifiers())
+                self._is_box_selecting = False
         
         self._reset_cursor()
+
+    def render(self, painter: QPainter):
+        if self._is_box_selecting:
+            # Create rect from start/current
+            x = min(self._box_start_pos.x, self._box_current_pos.x)
+            y = min(self._box_start_pos.y, self._box_current_pos.y)
+            w = abs(self._box_current_pos.x - self._box_start_pos.x)
+            h = abs(self._box_current_pos.y - self._box_start_pos.y)
+            
+            rect = QRectF(x, y, w, h)
+            
+            # Draw semi-transparent blue box
+            painter.setPen(QPen(QColor(100, 200, 255), 1))
+            painter.setBrush(QColor(100, 200, 255, 50))
+            painter.drawRect(rect)
+    
+    def _handle_box_selection(self, modifiers):
+        # Calculate Box Rect
+        x = min(self._box_start_pos.x, self._box_current_pos.x)
+        y = min(self._box_start_pos.y, self._box_current_pos.y)
+        w = abs(self._box_current_pos.x - self._box_start_pos.x)
+        h = abs(self._box_current_pos.y - self._box_start_pos.y)
+        
+        box_rect = QRectF(x, y, w, h)
+        
+        # Find intersecting body parts
+        entity = self._state.current_entity
+        if not entity: return
+        
+        # If strict selection logic needed: 
+        # Standard: Select if partially contained (Intersects)
+        
+        affected_bps = []
+        for bp in entity.body_parts:
+            if not bp.visible: continue
+            
+            bp_rect = QRectF(bp.position.x, bp.position.y, bp.size.x, bp.size.y)
+            if box_rect.intersects(bp_rect):
+                affected_bps.append(bp)
+        
+        # Apply Selection
+        # If Ctrl held, Add/Toggle? Standard is usually Add/Toggle.
+        # User request: "select all the bodyparts inside the square"
+        # Implying additive or replacement? 
+        # Usually Box Select replaces selection unless Modifier is held.
+        # Logic in mouse_press already cleared selection if no modifier.
+        # So here we just ADD whatever is in the box.
+        
+        for bp in affected_bps:
+            self._state.selection.add_to_selection(bp)
 
     def _update_cursor_shape(self, world_pos: Vec2):
         if not self._state.hitbox_edit_mode:
