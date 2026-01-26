@@ -195,6 +195,19 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._snap_combo)
         
         self._current_snap_value = 1.0
+        
+        toolbar.addSeparator()
+        
+        # Visual Grid controls
+        toolbar.addWidget(QLabel("  Grid:"))
+        
+        self._grid_combo = QComboBox()
+        self._grid_combo.addItems(["Off", "8", "16", "32", "64", "128", "Custom..."])
+        self._grid_combo.setCurrentIndex(2)  # Default: 16px
+        self._grid_combo.currentTextChanged.connect(self._on_grid_changed)
+        self._grid_combo.setToolTip("Visual grid size in pixels")
+        self._grid_combo.setFocusPolicy(Qt.ClickFocus)
+        toolbar.addWidget(self._grid_combo)
     
     def _setup_statusbar(self):
         """Setup status bar."""
@@ -342,6 +355,25 @@ class MainWindow(QMainWindow):
     def _on_snap_value_changed_external(self, value):
         # Sync combo if changed externally (e.g. from loaded prefs, though likely redundant)
         pass
+
+    def _on_grid_changed(self, text: str):
+        """Handle visual grid size change."""
+        visible = True
+        size = 16
+        
+        if text == "Off":
+            visible = False
+        elif text == "Custom...":
+            value, ok = QInputDialog.getInt(self, "Custom Grid Size", "Enter grid size (pixels):", 16, 4, 256)
+            if ok:
+                size = value
+            else:
+                visible = self._state.grid_visible
+                size = self._state.grid_size
+        else:
+            size = int(text)
+            
+        self._state.set_grid_settings(visible, size)
 
     def _check_save_changes(self) -> bool:
         """Check if there are unsaved changes and prompt user."""

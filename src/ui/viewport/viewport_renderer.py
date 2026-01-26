@@ -1,5 +1,5 @@
 
-from PySide6.QtCore import Qt, QRectF, QPointF, QRect
+from PySide6.QtCore import Qt, QRectF, QPointF, QRect, QLineF
 from PySide6.QtGui import QPainter, QPen, QColor, QTransform, QPixmap
 
 from src.core.state.editor_state import EditorState
@@ -32,6 +32,10 @@ class ViewportRenderer:
         entity = visible_entity or self._state.current_entity
         if not entity:
             return
+
+        # 0. Draw Grid
+        if self._state.grid_visible:
+            self._draw_grid(painter, view_rect)
 
         # 1. Draw Body Parts
         self._draw_body_parts(painter, entity)
@@ -208,3 +212,55 @@ class ViewportRenderer:
         painter.setPen(QPen(QColor(255, 255, 0), 2 / self.zoom))
         painter.drawLine(entity.pivot.x - pivot_size, entity.pivot.y, entity.pivot.x + pivot_size, entity.pivot.y)
         painter.drawLine(entity.pivot.x, entity.pivot.y - pivot_size, entity.pivot.x, entity.pivot.y + pivot_size)
+
+    def _draw_grid(self, painter: QPainter, view_rect: QRectF):
+        grid_size = self._state.grid_size
+        if grid_size <= 0:
+            return
+            
+        left = int(view_rect.left())
+        right = int(view_rect.right())
+        top = int(view_rect.top())
+        bottom = int(view_rect.bottom())
+        
+        # Calculate steps
+        start_x = (left // grid_size) * grid_size
+        start_y = (top // grid_size) * grid_size
+        
+        # Configuration
+        # Determine grid color based on background (assumed dark)
+        grid_color = QColor(60, 60, 60)
+        origin_color = QColor(80, 80, 80)
+        
+        lines = []
+        origin_lines = []
+        
+        # Vertical lines
+        x = start_x
+        while x <= right + grid_size:
+            line = QLineF(x, top, x, bottom)
+            if x == 0:
+                origin_lines.append(line)
+            else:
+                lines.append(line)
+            x += grid_size
+            
+        # Horizontal lines
+        y = start_y
+        while y <= bottom + grid_size:
+            line = QLineF(left, y, right, y)
+            if y == 0:
+                origin_lines.append(line)
+            else:
+                lines.append(line)
+            y += grid_size
+            
+        # Draw standard grid
+        painter.setPen(QPen(grid_color, 1 / self.zoom))
+        painter.drawLines(lines)
+        
+        # Draw origin lines (slightly brighter)
+        if origin_lines:
+            painter.setPen(QPen(origin_color, 2 / self.zoom))
+            painter.drawLines(origin_lines)
+

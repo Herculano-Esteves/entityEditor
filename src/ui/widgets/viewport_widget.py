@@ -74,6 +74,7 @@ class ViewportWidget(QWidget):
         self._signal_hub.hitbox_removed.connect(lambda h: self.update())
         self._signal_hub.hitbox_edit_mode_changed.connect(lambda e: self.update())
         self._signal_hub.snap_value_changed.connect(lambda v: self.update()) # Renderer might use this eventually
+        self._state.grid_changed.connect(lambda v, s: self.update())
 
     def set_entity(self, entity: Entity):
         """Set the entity to display."""
@@ -130,8 +131,13 @@ class ViewportWidget(QWidget):
         # But we need access to the preferences. 
         # For now, let's assume default is True.
         
-        # Draw
-        view_rect = QRectF() 
+        # Calculate visible world area
+        top_left = self.screen_to_world(QPointF(0, 0))
+        bottom_right = self.screen_to_world(QPointF(self.width(), self.height()))
+        view_rect = QRectF(top_left.x, top_left.y, 
+                          bottom_right.x - top_left.x, 
+                          bottom_right.y - top_left.y)
+                          
         self._renderer.render(painter, view_rect)
         
         # Draw Tool Overlay

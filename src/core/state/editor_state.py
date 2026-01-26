@@ -99,3 +99,20 @@ class EditorState(QObject):
             self.selection_on_top_changed.emit(enabled)
             # Maybe redundant to use signal_hub here if we use local signals, 
             # but ViewportRenderer might listen to state.
+            
+    # --- Grid Settings ---
+    grid_changed = Signal(bool, int) # visible, size
+    
+    @property
+    def grid_visible(self) -> bool:
+        return getattr(self, '_grid_visible', True)
+        
+    @property
+    def grid_size(self) -> int:
+        return getattr(self, '_grid_size', 16)
+        
+    def set_grid_settings(self, visible: bool, size: int):
+        self._grid_visible = visible
+        self._grid_size = size
+        self.grid_changed.emit(visible, size)
+
