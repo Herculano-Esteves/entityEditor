@@ -12,12 +12,16 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 import sys
 import os
+import copy
 
+# Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.data import Entity, Hitbox, Vec2
 from src.core import get_signal_hub, AddHitboxCommand, RemoveHitboxCommand, ModifyHitboxCommand
-
+from src.core import get_signal_hub, AddHitboxCommand, RemoveHitboxCommand, ModifyHitboxCommand
+from src.core.state.editor_state import EditorState
+from src.core.naming_utils import generate_unique_name, ensure_unique_name
 
 class HitboxPanel(QWidget):
     """Panel for managing hitboxes."""
@@ -27,30 +31,26 @@ class HitboxPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         
-        self._entity = None
-        self._selected_bodypart = None
-        self._selected_hitbox = None
-        self._signal_hub = get_signal_hub()
-        self._history_manager = None  # Will be set when entity loads
-        
-        # Track property state for undo
-        self._property_edit_old_state = None
-        self._updating_ui = False  # Flag to prevent change tracking during programmatic updates
+        self._state = EditorState()
+        self._updating_ui = False
         
         self._setup_ui()
         self._connect_signals()
+        
+        self._refresh_list()
+        self._update_properties()
     
     def _setup_ui(self):
         """Setup the UI layout."""
         layout = QVBoxLayout(self)
         
         # Info label
-        info_label = QLabel("Hitboxes for selected body part:")
-        layout.addWidget(info_label)
+        self._info_label = QLabel("Hitboxes for selected body part:")
+        layout.addWidget(self._info_label)
         
         # Hitbox list
         self._hitbox_list = QListWidget()
-        self._hitbox_list.currentItemChanged.connect(self._on_selection_changed)
+        self._hitbox_list.itemSelectionChanged.connect(self._on_list_selection_changed)
         layout.addWidget(self._hitbox_list)
         
         # Buttons
@@ -59,7 +59,7 @@ class HitboxPanel(QWidget):
         # Edit mode toggle
         self._edit_mode_check = QCheckBox("Edit Hitboxes")
         self._edit_mode_check.toggled.connect(self._on_edit_mode_changed)
-        self._edit_mode_check.setToolTip("Enable hitbox editing mode (persistent toggle)\nAllows moving/resizing hitboxes in viewport\n(Shortcut: Hold Shift)")
+        self._edit_mode_check.setToolTip("Enable hitbox editing mode in viewport")
         buttons_layout.addWidget(self._edit_mode_check)
         
         buttons_layout.addStretch()
@@ -79,397 +79,306 @@ class HitboxPanel(QWidget):
         layout.addLayout(buttons_layout)
         
         # Properties group
-        props_group = QGroupBox("Hitbox Properties")
+        self._props_group = QGroupBox("Hitbox Properties")
         props_layout = QFormLayout()
         
         # Name
         self._name_edit = QLineEdit()
-        self._name_edit.textChanged.connect(self._on_property_changed)
-        self._name_edit.editingFinished.connect(self._on_editing_finished)
-        self._name_edit.installEventFilter(self)  # Capture focus events for undo tracking
+        self._name_edit.editingFinished.connect(self._on_name_changed)
         props_layout.addRow("Name:", self._name_edit)
         
         # Type
         self._type_combo = QComboBox()
         self._type_combo.addItems(self.HITBOX_TYPES)
-        self._type_combo.currentTextChanged.connect(self._on_property_changed)
-        self._type_combo.currentTextChanged.connect(self._on_editing_finished)  # Combo changes are complete immediately
-        self._type_combo.installEventFilter(self)  # Capture focus events for undo tracking
+        self._type_combo.currentTextChanged.connect(self._on_type_changed)
         props_layout.addRow("Type:", self._type_combo)
         
         # Position (integers only)
         self._pos_x_spin = QSpinBox()
         self._pos_x_spin.setRange(-10000, 10000)
-        self._pos_x_spin.valueChanged.connect(self._on_property_changed)
-        self._pos_x_spin.editingFinished.connect(self._on_editing_finished)
-        self._pos_x_spin.installEventFilter(self)  # Capture focus events for undo tracking
-        props_layout.addRow("Position X (px):", self._pos_x_spin)
+        self._pos_x_spin.valueChanged.connect(lambda v: self._on_property_changing('x', v))
+        props_layout.addRow("X (px):", self._pos_x_spin)
         
         self._pos_y_spin = QSpinBox()
         self._pos_y_spin.setRange(-10000, 10000)
-        self._pos_y_spin.valueChanged.connect(self._on_property_changed)
-        self._pos_y_spin.editingFinished.connect(self._on_editing_finished)
-        self._pos_y_spin.installEventFilter(self)  # Capture focus events for undo tracking
-        props_layout.addRow("Position Y (px):", self._pos_y_spin)
+        self._pos_y_spin.valueChanged.connect(lambda v: self._on_property_changing('y', v))
+        props_layout.addRow("Y (px):", self._pos_y_spin)
         
-        # Size (integers only)
-        self._size_x_spin = QSpinBox()
-        self._size_x_spin.setRange(1, 10000)
-        self._size_x_spin.setValue(32)
-        self._size_x_spin.valueChanged.connect(self._on_property_changed)
-        self._size_x_spin.editingFinished.connect(self._on_editing_finished)
-        self._size_x_spin.installEventFilter(self)  # Capture focus events for undo tracking
-        props_layout.addRow("Width (px):", self._size_x_spin)
+        # Size
+        self._width_spin = QSpinBox()
+        self._width_spin.setRange(1, 10000)
+        self._width_spin.valueChanged.connect(lambda v: self._on_property_changing('w', v))
+        props_layout.addRow("Width (px):", self._width_spin)
         
-        self._size_y_spin = QSpinBox()
-        self._size_y_spin.setRange(1, 10000)
-        self._size_y_spin.setValue(32)
-        self._size_y_spin.valueChanged.connect(self._on_property_changed)
-        self._size_y_spin.editingFinished.connect(self._on_editing_finished)
-        self._size_y_spin.installEventFilter(self)  # Capture focus events for undo tracking
-        props_layout.addRow("Height (px):", self._size_y_spin)
+        self._height_spin = QSpinBox()
+        self._height_spin.setRange(1, 10000)
+        self._height_spin.valueChanged.connect(lambda v: self._on_property_changing('h', v))
+        props_layout.addRow("Height (px):", self._height_spin)
         
-        props_group.setLayout(props_layout)
-        layout.addWidget(props_group)
+        # Enabled
+        self._enabled_check = QCheckBox("Enabled")
+        self._enabled_check.toggled.connect(lambda v: self._on_property_changing('enabled', v))
+        props_layout.addRow("", self._enabled_check)
+        
+        self._props_group.setLayout(props_layout)
+        layout.addWidget(self._props_group)
         
         layout.addStretch()
         
         self._update_properties_enabled()
-    
+
     def _connect_signals(self):
-        """Connect to signal hub."""
-        self._signal_hub.entity_loaded.connect(self.set_entity)
-        self._signal_hub.bodypart_selected.connect(self._on_bodypart_selected)
-        self._signal_hub.bodypart_modified.connect(lambda _: self._refresh_list())
-        self._signal_hub.hitbox_modified.connect(self._on_external_modification)
-    
-    def set_entity(self, entity: Entity):
-        """Set the entity to edit."""
-        self._entity = entity
-        self._selected_bodypart = None
-        self._selected_hitbox = None
+        # State signals
+        if hasattr(self._state.selection, "selection_changed"):
+             self._state.selection.selection_changed.connect(self._on_state_selection_changed)
         
-        # Get history manager from parent window
-        parent_window = self.window()
-        if hasattr(parent_window, 'get_history_manager'):
-            self._history_manager = parent_window.get_history_manager()
-        
-        self._refresh_list()
-    
-    def _on_bodypart_selected(self, bodypart):
-        """Handle body part selection."""
-        self._selected_bodypart = bodypart
-        self._selected_hitbox = None
-        self._refresh_list()
-    
+        # Hub signals
+        hub = get_signal_hub()
+        hub.entity_loaded.connect(lambda e: self._refresh_list())
+        hub.bodyparts_selection_changed.connect(lambda s: self._refresh_list()) # Refresh when selected BP changes
+        hub.hitbox_added.connect(lambda h: self._refresh_list())
+        hub.hitbox_removed.connect(lambda h: self._refresh_list())
+        hub.hitbox_modified.connect(self._on_hitbox_modified)
+        hub.hitbox_selected.connect(self._on_external_hitbox_selected)
+
     def _refresh_list(self):
-        """Refresh the hitbox list while preserving selection."""
-        # Store currently selected hitbox
-        selected_hb = None
-        current_item = self._hitbox_list.currentItem()
-        if current_item:
-            selected_hb = current_item.data(Qt.UserRole)
+        self._hitbox_list.blockSignals(True)
+    def _refresh_list(self):
+        # Save scroll position
+        scroll_val = self._hitbox_list.verticalScrollBar().value()
         
+        self._hitbox_list.blockSignals(True)
         self._hitbox_list.clear()
         
-        if not self._selected_bodypart:
-            # No body part selected - list is empty but edit mode can stay active
-            return
+        # Determined by selected body part
+        bp = self._state.selection.selected_body_part
+        if not bp:
+            self._info_label.setText("No body part selected.")
+            self._hitbox_list.setEnabled(False)
+            self._add_btn.setEnabled(False)
+        else:
+            self._info_label.setText(f"Hitboxes for: {bp.name}")
+            self._hitbox_list.setEnabled(True)
+            self._add_btn.setEnabled(True)
+            
+            for hitbox in bp.hitboxes:
+                item = QListWidgetItem()
+                item.setData(Qt.UserRole, hitbox)
+                self._hitbox_list.addItem(item)
+                
+                # Custom Widget
+                widget = QWidget()
+                layout = QHBoxLayout(widget)
+                layout.setContentsMargins(4, 2, 4, 2)
+                layout.setSpacing(4)
+                
+                # Eye Button
+                eye_btn = QPushButton("👁" if hitbox.enabled else "⚫")
+                eye_btn.setFixedSize(20, 20)
+                eye_btn.setFlat(True)
+                eye_btn.clicked.connect(lambda checked, h=hitbox: self._toggle_hitbox_visibility(h))
+                layout.addWidget(eye_btn)
+                
+                # Label
+                name_lbl = QLabel(f"{hitbox.name} ({hitbox.hitbox_type})")
+                layout.addWidget(name_lbl)
+                layout.addStretch()
+                
+                item.setSizeHint(widget.sizeHint())
+                self._hitbox_list.setItemWidget(item, widget)
+                
+                if self._state.selection.is_hitbox_selected(hitbox):
+                    item.setSelected(True)
+            
+            # Also show Entity Hitboxes if any?
+            # Current Panel logic seemed focused on BodyPart hitboxes or mixed?
+            # Looking at original file: `_selected_bodypart` was used.
+            # If `_selected_bodypart` is None, it might show Entity hitboxes?
+            # Let's stick to BodyPart hitboxes for now, or check logical flow.
+            # If no BP selected, maybe show Entity Hitboxes?
+            if not bp and self._state.current_entity and hasattr(self._state.current_entity, 'entity_hitboxes'):
+                 # Show entity hitboxes logic if needed
+                 pass
+
+        self._hitbox_list.blockSignals(False)
         
-        self._add_btn.setEnabled(True)
+        # Restore scroll position
+        if scroll_val is not None:
+            self._hitbox_list.verticalScrollBar().setValue(scroll_val)
+            
+        self._update_properties_enabled()
+
+    def _on_list_selection_changed(self):
+        items = self._hitbox_list.selectedItems()
+        if items:
+            hitbox = items[0].data(Qt.UserRole)
+            self._state.selection.select_hitbox(hitbox)
+        else:
+            self._state.selection.deselect_hitbox()
+            
+        self._update_properties()
+
+    def _on_state_selection_changed(self):
+        # Sync list selection
+        self._hitbox_list.blockSignals(True)
+        self._hitbox_list.clearSelection()
         
-        for hitbox in self._selected_bodypart.hitboxes:
-            # Create list item
-            item = QListWidgetItem()
-            item.setData(Qt.UserRole, hitbox)
-            self._hitbox_list.addItem(item)
-            
-            # Create custom widget with eye icon and name
-            widget = QWidget()
-            layout = QHBoxLayout(widget)
-            layout.setContentsMargins(4, 2, 4, 2)
-            layout.setSpacing(4)
-            
-            # Eye button for visibility toggle
-            eye_btn = QPushButton()
-            eye_btn.setFixedSize(20, 20)
-            eye_btn.setFlat(True)
-            eye_btn.setText("👁" if hitbox.enabled else "⚫")
-            eye_btn.setToolTip("Toggle visibility")
-            eye_btn.clicked.connect(lambda checked, hb=hitbox: self._toggle_visibility(hb))
-            layout.addWidget(eye_btn)
-            
-            # Name label with type color indicator
-            type_color = {"collision": "#ff6464", "damage": "#ffc864", "trigger": "#64ff64"}.get(hitbox.hitbox_type, "#c8c8c8")
-            name_label = QLabel(f'<span style="color:{type_color}">■</span> {hitbox.name}')
-            layout.addWidget(name_label)
-            layout.addStretch()
-            
-            item.setSizeHint(widget.sizeHint())
-            self._hitbox_list.setItemWidget(item, widget)
-        
-        # Restore selection
-        if selected_hb:
+        hb = self._state.selection.selected_hitbox
+        if hb:
             for i in range(self._hitbox_list.count()):
                 item = self._hitbox_list.item(i)
-                if item.data(Qt.UserRole) == selected_hb:
-                    self._hitbox_list.setCurrentItem(item)
+                if item.data(Qt.UserRole) == hb:
+                    item.setSelected(True)
                     break
-    
-    def _on_selection_changed(self, current, previous):
-        """Handle selection change in list."""
-        if current:
-            self._selected_hitbox = current.data(Qt.UserRole)
-            self._update_properties()
-            self._signal_hub.notify_hitbox_selected(self._selected_hitbox)
-        else:
-            self._selected_hitbox = None
-            self._signal_hub.notify_hitbox_selected(None)
         
-        self._update_properties_enabled()
-    
-    def _on_add_hitbox(self):
-        """Add a new hitbox."""
-        if not self._selected_bodypart:
-            return
+        self._hitbox_list.blockSignals(False)
+        self._update_properties()
         
-        count = len(self._selected_bodypart.hitboxes)
-        
-        # Default hitbox size matches body part's rendered size (in pixels, as integers)
-        default_w = int(self._selected_bodypart.size.x * self._selected_bodypart.pixel_scale)
-        default_h = int(self._selected_bodypart.size.y * self._selected_bodypart.pixel_scale)
-        
-        hitbox = Hitbox(
-            name=f"Hitbox_{count}",
-            x=0,  # Integer position
-            y=0,  # Integer position
-            width=default_w,   # Integer width
-            height=default_h,  # Integer height
-            hitbox_type="collision"
-        )
-        
-        # Use command if history manager available
-        if self._history_manager:
-            cmd = AddHitboxCommand(self._selected_bodypart, hitbox)
-            self._history_manager.execute(cmd)
-        else:
-            # Fallback to direct modification
-            self._selected_bodypart.hitboxes.append(hitbox)
-            self._signal_hub.notify_hitbox_added(hitbox)
-        
-        self._refresh_list()
-        
-        # Select the new hitbox
-        self._hitbox_list.setCurrentRow(self._hitbox_list.count() - 1)
-    
-    def _on_duplicate_hitbox(self):
-        """Duplicate the selected hitbox."""
-        if not self._selected_bodypart or not self._selected_hitbox:
-            return
-        
-        # Create a copy
-        import copy
-        hitbox_copy = copy.deepcopy(self._selected_hitbox)
-        
-        # Modify name (add "2" or increment number)
-        base_name = hitbox_copy.name
-        if base_name[-1].isdigit():
-            import re
-            match = re.match(r'(.+?)(\d+)$', base_name)
-            if match:
-                hitbox_copy.name = match.group(1) + str(int(match.group(2)) + 1)
-            else:
-                hitbox_copy.name = base_name + "2"
-        else:
-            hitbox_copy.name = base_name + "2"
-        
-        # Offset position slightly
-        hitbox_copy.position.x += 5
-        hitbox_copy.position.y += 5
-        
-        # Use command if history manager available
-        if self._history_manager:
-            cmd = AddHitboxCommand(self._selected_bodypart, hitbox_copy)
-            self._history_manager.execute(cmd)
-        else:
-            # Fallback to direct modification
-            self._selected_bodypart.hitboxes.append(hitbox_copy)
-            self._signal_hub.notify_hitbox_added(hitbox_copy)
-        
-        self._refresh_list()
-        
-        # Select the new hitbox
-        self._hitbox_list.setCurrentRow(self._hitbox_list.count() - 1)
-    
-    def _on_edit_mode_changed(self, checked: bool):
-        """Handle edit mode toggle."""
-        self._signal_hub.notify_hitbox_edit_mode_changed(checked)
-    
-    def _toggle_visibility(self, hitbox):
-        """Toggle hitbox visibility."""
-        hitbox.enabled = not hitbox.enabled
-        self._signal_hub.notify_hitbox_modified(hitbox)
-        self._refresh_list()  # Refresh to update eye icon
-    
-    def _on_remove_hitbox(self):
-        """Remove the selected hitbox."""
-        if not self._selected_bodypart or not self._selected_hitbox:
-            return
-        
-        if self._selected_hitbox in self._selected_bodypart.hitboxes:
-            # Use command if history manager available
-            if self._history_manager:
-                cmd = RemoveHitboxCommand(self._selected_bodypart, self._selected_hitbox)
-                self._history_manager.execute(cmd)
-            else:
-                # Fallback to direct modification
-                self._selected_bodypart.hitboxes.remove(self._selected_hitbox)
-                self._signal_hub.notify_hitbox_removed(self._selected_hitbox)
-            
-            self._refresh_list()
-    
-    def _on_name_changed(self):
-        """Handle name editing finished (to update list labels)."""
-        if not self._selected_hitbox:
-            return
-        
-        old_name = self._selected_hitbox.name
-        self._selected_hitbox.name = self._name_edit.text()
-        
-        # Update only the label widget for the current item (don't refresh entire list)
-        if old_name != self._selected_hitbox.name:
-            current_item = self._hitbox_list.currentItem()
-            if current_item:
-                widget = self._hitbox_list.itemWidget(current_item)
-                if widget:
-                    # Find the QLabel in the widget and update its text
-                    from PySide6.QtWidgets import QLabel
-                    label = widget.findChild(QLabel)
-                    if label:
-                        # Update with colored type indicator
-                        type_color = {"collision": "#ff6464", "damage": "#ffc864", "trigger": "#64ff64"}.get(self._selected_hitbox.hitbox_type, "#c8c8c8")
-                        label.setText(f'<span style="color:{type_color}">■</span> {self._selected_hitbox.name}')
-        
-        # Notify modification
-        self._signal_hub.notify_hitbox_modified(self._selected_hitbox)
-    
-    def eventFilter(self, obj, event):
-        """Capture focus-in events to snapshot state before editing."""
-        from PySide6.QtCore import QEvent
-        
-        if event.type() == QEvent.FocusIn:
-            # Check if this is one of our property editors
-            if obj in [self._pos_x_spin, self._pos_y_spin, self._size_x_spin, 
-                      self._size_y_spin, self._name_edit, self._type_combo]:
-                self._on_property_focused()
-        return super().eventFilter(obj, event)
-    
-    def _on_property_focused(self):
-        """Snapshot hitbox state when user starts editing."""
-        if self._selected_hitbox and not self._property_edit_old_state and not self._updating_ui:
-            self._property_edit_old_state = {
-                'x': self._selected_hitbox.x,
-                'y': self._selected_hitbox.y,
-                'width': self._selected_hitbox.width,
-                'height': self._selected_hitbox.height,
-                'name': self._selected_hitbox.name,
-                'hitbox_type': self._selected_hitbox.hitbox_type,
-            }
-    
-    def _on_property_changed(self):
-        """Handle valueChanged - apply for live preview, no undo yet.
-        
-        This updates the model immediately so the viewport shows changes in real-time.
-        The actual undo command is created later in _on_editing_finished().
-        """
-        if not self._selected_hitbox or self._updating_ui:
-            return
-        
-        # Update model (for live preview in viewport)
-        self._selected_hitbox.name = self._name_edit.text()
-        self._selected_hitbox.hitbox_type = self._type_combo.currentText()
-        self._selected_hitbox.x = self._pos_x_spin.value()
-        self._selected_hitbox.y = self._pos_y_spin.value()
-        self._selected_hitbox.width = self._size_x_spin.value()
-        self._selected_hitbox.height = self._size_y_spin.value()
-        
-        # Notify for viewport refresh
-        self._signal_hub.notify_hitbox_modified(self._selected_hitbox)
-    
-    def _on_editing_finished(self):
-        """Create undo command when editing completes.
-        
-        Called when user presses Enter, tabs away, or changes combo box selection.
-        Creates a ModifyHitboxCommand with before/after state if anything changed.
-        """
-        if not self._selected_hitbox or not self._property_edit_old_state or self._updating_ui:
-            return
-        
-        # Capture final state
-        new_state = {
-            'x': self._selected_hitbox.x,
-            'y': self._selected_hitbox.y,
-            'width': self._selected_hitbox.width,
-            'height': self._selected_hitbox.height,
-            'name': self._selected_hitbox.name,
-            'hitbox_type': self._selected_hitbox.hitbox_type,
-        }
-        
-        # Only create command if something changed
-        if new_state != self._property_edit_old_state and self._history_manager:
-            cmd = ModifyHitboxCommand(
-                self._selected_hitbox,
-                self._property_edit_old_state,
-                new_state
-            )
-            self._history_manager.execute(cmd)
-        
-        # Clear tracking
-        self._property_edit_old_state = None
-    
+        # If BodyPart changed, list is refreshed via hub signal `bodyparts_selection_changed`, so we are good.
+
+    def _on_external_hitbox_selected(self, hitbox):
+        # Triggered by signal hub (e.g. from Viewport)
+        # Should be covered by state selection change, but if not:
+        if hitbox != self._state.selection.selected_hitbox:
+            self._state.selection.select_hitbox(hitbox)
+
     def _update_properties(self):
-        """Update properties from selected hitbox."""
-        if not self._selected_hitbox:
-            return
+        self._updating_ui = True
+        hb = self._state.selection.selected_hitbox
         
-        # Block signals
-        self._name_edit.blockSignals(True)
-        self._type_combo.blockSignals(True)
-        self._pos_x_spin.blockSignals(True)
-        self._pos_y_spin.blockSignals(True)
-        self._size_x_spin.blockSignals(True)
-        self._size_y_spin.blockSignals(True)
-        
-        self._name_edit.setText(self._selected_hitbox.name)
-        self._type_combo.setCurrentText(self._selected_hitbox.hitbox_type)
-        self._pos_x_spin.setValue(self._selected_hitbox.x)
-        self._pos_y_spin.setValue(self._selected_hitbox.y)
-        self._size_x_spin.setValue(self._selected_hitbox.width)
-        self._size_y_spin.setValue(self._selected_hitbox.height)
-        
-        # Unblock signals
-        self._name_edit.blockSignals(False)
-        self._type_combo.blockSignals(False)
-        self._pos_x_spin.blockSignals(False)
-        self._pos_y_spin.blockSignals(False)
-        self._size_x_spin.blockSignals(False)
-        self._size_y_spin.blockSignals(False)
-    
+        if hb:
+            self._name_edit.setText(hb.name)
+            self._type_combo.setCurrentText(hb.hitbox_type)
+            self._pos_x_spin.setValue(hb.x)
+            self._pos_y_spin.setValue(hb.y)
+            self._width_spin.setValue(hb.width)
+            self._height_spin.setValue(hb.height)
+            self._enabled_check.setChecked(hb.enabled)
+            
+            self._props_group.setEnabled(True)
+            self._props_group.setTitle(f"Properties: {hb.name}")
+        else:
+            self._name_edit.clear()
+            self._props_group.setEnabled(False)
+            self._props_group.setTitle("Hitbox Properties (None Selected)")
+            
+        self._updating_ui = False
+        self._update_properties_enabled()
+
     def _update_properties_enabled(self):
-        """Enable/disable properties based on selection."""
-        enabled = self._selected_hitbox is not None
+        has_sel = (self._state.selection.selected_hitbox is not None)
+        self._remove_btn.setEnabled(has_sel)
+        self._duplicate_btn.setEnabled(has_sel)
+
+    # --- Actions ---
+
+    def _toggle_hitbox_visibility(self, hitbox):
+        hitbox.enabled = not hitbox.enabled
+        get_signal_hub().notify_hitbox_modified(hitbox)
+        # Update UI property if selected
+        if hitbox == self._state.selection.selected_hitbox:
+            self._update_properties()
+        # Refresh list to update icon
+        self._refresh_list()
+
+    def _on_add_hitbox(self):
+        bp = self._state.selection.selected_body_part
+        if not bp: return
         
-        self._name_edit.setEnabled(enabled)
-        self._type_combo.setEnabled(enabled)
-        self._pos_x_spin.setEnabled(enabled)
-        self._pos_y_spin.setEnabled(enabled)
-        self._size_x_spin.setEnabled(enabled)
-        self._size_y_spin.setEnabled(enabled)
-        self._remove_btn.setEnabled(enabled)
-        self._duplicate_btn.setEnabled(enabled)
-    
-    def _on_external_modification(self, hitbox):
-        """Handle external hitbox modification without refreshing the list."""
-        if hitbox == self._selected_hitbox:
-            self._property_edit_old_state = None  # Clear pending edit state (undo invalidates it)
+        count = len(bp.hitboxes)
+        hb = Hitbox(f"Hitbox_{count}", 0, 0, 32, 32)
+        
+        if self._state.history:
+            self._state.history.execute(AddHitboxCommand(bp, hb))
+        else:
+            bp.add_hitbox(hb)
+            get_signal_hub().notify_hitbox_added(hb)
+
+    def _on_remove_hitbox(self):
+        hb = self._state.selection.selected_hitbox
+        bp = self._state.selection.selected_body_part
+        if not hb or not bp: return # Assuming Hitbox belongs to selected BP
+        
+        if self._state.history:
+            self._state.history.execute(RemoveHitboxCommand(bp, hb))
+        else:
+            bp.remove_hitbox(hb)
+            get_signal_hub().notify_hitbox_removed(hb)
+
+    def _on_duplicate_hitbox(self):
+        hb = self._state.selection.selected_hitbox
+        bp = self._state.selection.selected_body_part
+        if not hb or not bp: return
+        
+        new_hb = copy.deepcopy(hb)
+        existing_names = {h.name for h in bp.hitboxes}
+        new_hb.name = generate_unique_name(hb.name, existing_names)
+        # Offset removed as per user request
+        # new_hb.x += 10
+        # new_hb.y += 10
+        
+        # Find insertion index
+        try:
+            current_index = bp.hitboxes.index(hb)
+            insert_index = current_index + 1
+        except ValueError:
+            insert_index = -1
+        
+        if self._state.history:
+            self._state.history.execute(AddHitboxCommand(bp, new_hb, insert_index))
+        else:
+            if insert_index >= 0:
+                bp.hitboxes.insert(insert_index, new_hb)
+            else:
+                bp.add_hitbox(new_hb)
+            get_signal_hub().notify_hitbox_added(new_hb)
+
+    def _on_edit_mode_changed(self, enabled):
+        self._state.set_hitbox_edit_mode(enabled)
+
+    # --- Property Editing ---
+
+    def _on_property_changing(self, prop, value):
+        if self._updating_ui: return
+        hb = self._state.selection.selected_hitbox
+        if not hb: return
+        
+        # Direct modify for preview
+        # TODO: Better Undo support (begin_change / end_change on focus)
+        if prop == 'x': hb.x = value
+        elif prop == 'y': hb.y = value
+        elif prop == 'w': hb.width = value
+        elif prop == 'h': hb.height = value
+        elif prop == 'enabled': hb.enabled = value
+        
+        get_signal_hub().notify_hitbox_modified(hb)
+
+    def _on_name_changed(self):
+        if self._updating_ui: return
+        hb = self._state.selection.selected_hitbox
+        bp = self._state.selection.selected_body_part
+        
+        if hb and bp and hb.name != self._name_edit.text():
+            new_name = self._name_edit.text()
+            existing_names = {h.name for h in bp.hitboxes if h != hb}
+            
+            unique_name = ensure_unique_name(new_name, existing_names)
+            
+            if unique_name != new_name:
+                self._name_edit.setText(unique_name)
+            
+            hb.name = unique_name
+            get_signal_hub().notify_hitbox_modified(hb)
+            self._refresh_list()
+
+    def _on_type_changed(self, text):
+        if self._updating_ui: return
+        hb = self._state.selection.selected_hitbox
+        if hb:
+            hb.hitbox_type = text
+            get_signal_hub().notify_hitbox_modified(hb)
+            self._refresh_list() # Update list label
+
+    def _on_hitbox_modified(self, hb):
+        if hb == self._state.selection.selected_hitbox:
             self._update_properties()

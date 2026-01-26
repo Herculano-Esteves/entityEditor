@@ -28,14 +28,21 @@ class Command:
 class AddBodyPartCommand(Command):
     """Command to add a body part to the entity."""
     
-    def __init__(self, bodypart: BodyPart):
+    def __init__(self, bodypart: BodyPart, insert_index: int = -1):
         self.bodypart = bodypart
+        self.insert_index = insert_index
     
     def execute(self, entity, signal_hub=None):
         """Add the body part to the entity."""
-        entity.add_body_part(self.bodypart)
+        if self.insert_index >= 0:
+            entity.body_parts.insert(self.insert_index, self.bodypart)
+        else:
+            entity.add_body_part(self.bodypart)
+            
         if signal_hub:
             signal_hub.notify_bodypart_added(self.bodypart)
+            if self.insert_index >= 0:
+                signal_hub.notify_bodypart_reordered() # List order changed
     
     def undo(self, entity, signal_hub=None):
         """Remove the body part from the entity."""
@@ -146,13 +153,18 @@ class MoveBodyPartCommand(Command):
 class AddHitboxCommand(Command):
     """Command to add a hitbox to a body part."""
     
-    def __init__(self, parent_bodypart: BodyPart, hitbox: Hitbox):
+    def __init__(self, parent_bodypart: BodyPart, hitbox: Hitbox, insert_index: int = -1):
         self.parent_bodypart = parent_bodypart
         self.hitbox = hitbox
+        self.insert_index = insert_index
     
     def execute(self, entity, signal_hub=None):
         """Add the hitbox to the parent body part."""
-        self.parent_bodypart.hitboxes.append(self.hitbox)
+        if self.insert_index >= 0:
+            self.parent_bodypart.hitboxes.insert(self.insert_index, self.hitbox)
+        else:
+            self.parent_bodypart.hitboxes.append(self.hitbox)
+            
         if signal_hub:
             signal_hub.notify_hitbox_added(self.hitbox)
     

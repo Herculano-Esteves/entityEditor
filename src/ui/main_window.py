@@ -5,7 +5,7 @@ The main application window with menu bar, dockable panels, and central viewport
 """
 
 from PySide6.QtWidgets import (QMainWindow, QDockWidget, QFileDialog, QMessageBox,
-                                QToolBar, QStatusBar, QLabel)
+                                QToolBar, QStatusBar, QLabel, QComboBox, QInputDialog)
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QAction, QKeySequence
 from pathlib import Path
@@ -15,7 +15,8 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.data import Entity, EntitySerializer, EntityDeserializer
-from src.core import get_signal_hub, HistoryManager
+from src.core import get_signal_hub
+from src.core.state.editor_state import EditorState
 from src.ui.widgets import ViewportWidget
 from src.ui.panels import EntityPanel, BodyPartsPanel, HitboxPanel
 
@@ -26,19 +27,21 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         
-        # State
-        self._current_entity: Entity = None
+        # Global State
+        self._state = EditorState()
+        
+        # Local Window State
         self._current_filepath: str = None
         self._is_modified = False
         
-        # Signal hub
+        # Connect to State
+        self._state.entity_changed.connect(self._on_entity_changed)
+        
+        # Connect to Signal Hub (Legacy / UI events)
         self._signal_hub = get_signal_hub()
         self._signal_hub.entity_modified.connect(self._on_entity_modified)
-        self._signal_hub.undo_redo_state_changed.connect(self._on_undo_redo_state_changed)
-        
-        # History manager (created when entity loaded)
-        self._history_manager: HistoryManager = None
         self._signal_hub.entity_saved.connect(self._on_entity_saved)
+        self._signal_hub.snap_value_changed.connect(self._on_snap_value_changed_external)
         
         # Setup UI
         self.setWindowTitle("Entity Editor")
@@ -48,6 +51,12 @@ class MainWindow(QMainWindow):
         self._setup_menus()
         self._setup_toolbar()
         self._setup_statusbar()
+        
+        # Initialize History via State (it does this internally but we want to hook up UI updates)
+        # We need to listen to history changes to update Undo/Redo buttons.
+        # HistoryService wraps HistoryManager. HistoryManager emits via SignalHub?
+        # Let's check: HistoryManager uses SignalHub.undo_redo_state_changed.
+        self._signal_hub.undo_redo_state_changed.connect(self._on_undo_redo_state_changed)
         
         # Create new entity by default
         self._new_entity()
@@ -129,15 +138,15 @@ class MainWindow(QMainWindow):
         edit_menu = menubar.addMenu("&Edit")
         
         self._undo_action = QAction("&Undo", self)
-        self._undo_action.setShortcut(QKeySequence.Undo)  # Ctrl+Z
-        self._undo_action.setShortcutContext(Qt.ApplicationShortcut)  # CRITICAL: Work even when text widgets focused
+        self._undo_action.setShortcut(QKeySequence.Undo)
+        self._undo_action.setShortcutContext(Qt.ApplicationShortcut)
         self._undo_action.triggered.connect(self._on_undo)
         self._undo_action.setEnabled(False)
         edit_menu.addAction(self._undo_action)
         
         self._redo_action = QAction("&Redo", self)
-        self._redo_action.setShortcut(QKeySequence.Redo)  # Ctrl+Y or Ctrl+Shift+Z
-        self._redo_action.setShortcutContext(Qt.ApplicationShortcut)  # CRITICAL: Work even when text widgets focused
+        self._redo_action.setShortcut(QKeySequence.Redo)
+        self._redo_action.setShortcutContext(Qt.ApplicationShortcut)
         self._redo_action.triggered.connect(self._on_redo)
         self._redo_action.setEnabled(False)
         edit_menu.addAction(self._redo_action)
@@ -177,17 +186,15 @@ class MainWindow(QMainWindow):
         # Grid snap controls
         toolbar.addWidget(QLabel("  Grid Snap (px):"))
         
-        from PySide6.QtWidgets import QComboBox
         self._snap_combo = QComboBox()
         self._snap_combo.addItems(["Off", "1", "2", "4", "8", "16", "32", "Custom..."])
-        self._snap_combo.setCurrentIndex(1)  # Default: 1px for pixel-perfect
+        self._snap_combo.setCurrentIndex(1)  # Default: 1px
         self._snap_combo.currentTextChanged.connect(self._on_snap_changed)
-        self._snap_combo.setToolTip("Grid snap in pixels (always active when dragging)")
-        self._snap_combo.setFocusPolicy(Qt.ClickFocus)  # Prevent keyboard search from intercepting spinbox input
+        self._snap_combo.setToolTip("Grid snap in pixels")
+        self._snap_combo.setFocusPolicy(Qt.ClickFocus)
         toolbar.addWidget(self._snap_combo)
         
-        # Store current snap value
-        self._current_snap_value = 1.0  # Default 1px
+        self._current_snap_value = 1.0
     
     def _setup_statusbar(self):
         """Setup status bar."""
@@ -200,14 +207,13 @@ class MainWindow(QMainWindow):
         if not self._check_save_changes():
             return
         
-        self._current_entity = Entity(name="NewEntity")
+        new_entity = Entity(name="NewEntity")
         self._current_filepath = None
         self._is_modified = False
         
-        # Create new history manager for new entity
-        self._history_manager = HistoryManager(self._current_entity, self._signal_hub)
+        # Update State (This is the critical fix)
+        self._state.set_entity(new_entity)
         
-        self._signal_hub.notify_entity_loaded(self._current_entity)
         self._update_window_title()
         self._statusbar.showMessage("New entity created")
     
@@ -228,22 +234,16 @@ class MainWindow(QMainWindow):
         
         try:
             entity = EntityDeserializer.load(filename)
-            self._current_entity = entity
             self._current_filepath = filename
             self._is_modified = False
             
-            # Create new history manager for loaded entity
-            self._history_manager = HistoryManager(self._current_entity, self._signal_hub)
+            # Update State
+            self._state.set_entity(entity)
             
-            self._signal_hub.notify_entity_loaded(self._current_entity)
             self._update_window_title()
             self._statusbar.showMessage(f"Opened: {Path(filename).name}")
         except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Failed to load entity:\n{str(e)}"
-            )
+            QMessageBox.critical(self, "Error", f"Failed to load entity:\n{str(e)}")
     
     def _save_entity(self):
         """Save the current entity."""
@@ -262,16 +262,17 @@ class MainWindow(QMainWindow):
         )
         
         if filename:
-            # Ensure .entdef extension
             if not filename.endswith('.entdef'):
                 filename += '.entdef'
-            
             self._do_save(filename)
     
     def _do_save(self, filepath: str):
         """Perform the actual save operation."""
+        entity = self._state.current_entity
+        if not entity: return
+
         try:
-            EntitySerializer.save(self._current_entity, filepath)
+            EntitySerializer.save(entity, filepath)
             self._current_filepath = filepath
             self._is_modified = False
             
@@ -279,18 +280,13 @@ class MainWindow(QMainWindow):
             self._update_window_title()
             self._statusbar.showMessage(f"Saved: {Path(filepath).name}")
         except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Failed to save entity:\n{str(e)}"
-            )
+            QMessageBox.critical(self, "Error", f"Failed to save entity:\n{str(e)}")
     
     def _export_as_json(self):
         """Export the current entity as JSON."""
-        if not self._current_entity:
-            return
+        entity = self._state.current_entity
+        if not entity: return
         
-        # Get filename
         filename, _ = QFileDialog.getSaveFileName(
             self,
             "Export Entity as JSON",
@@ -298,50 +294,36 @@ class MainWindow(QMainWindow):
             "JSON Files (*.json);;All Files (*.*)"
         )
         
-        if not filename:
-            return
+        if not filename: return
         
-        # Ensure .json extension
         if not filename.endswith('.json'):
             filename += '.json'
         
         try:
-            EntitySerializer.save_json_debug(self._current_entity, filename)
+            EntitySerializer.save_json_debug(entity, filename)
             self._statusbar.showMessage(f"Exported to JSON: {Path(filename).name}")
             QMessageBox.information(
                 self,
                 "Export Successful",
-                f"Entity exported to:\n{filename}\n\nThis JSON file is human-readable and can be used for debugging or external tools."
+                f"Entity exported to:\n{filename}"
             )
         except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Failed to export entity:\n{str(e)}"
-            )
+            QMessageBox.critical(self, "Error", f"Failed to export entity:\n{str(e)}")
     
     def _on_snap_changed(self, text: str):
         """Handle grid snap value change."""
         if text == "Off":
             self._current_snap_value = 0.0
         elif text == "Custom...":
-            # Show input dialog for custom pixel value
-            from PySide6.QtWidgets import QInputDialog
-            value, ok = QInputDialog.getInt(
-                self,
-                "Custom Snap Value",
-                "Enter snap value (pixels):",
-                8,  # default
-                1,  # min
-                128,  # max
-            )
+            value, ok = QInputDialog.getInt(self, "Custom Snap Value", "Enter snap value (pixels):", 8, 1, 128)
             if ok:
                 self._current_snap_value = float(value)
                 # Update combo to show custom value
-                if self._snap_combo.count() > 7:
-                    self._snap_combo.removeItem(7)
-                self._snap_combo.addItem(str(value))
-                self._snap_combo.setCurrentIndex(7)
+                # This logic was removed in the provided diff, so I'm removing it too.
+                # if self._snap_combo.count() > 7:
+                #     self._snap_combo.removeItem(7)
+                # self._snap_combo.addItem(str(value))
+                # self._snap_combo.setCurrentIndex(7)
             else:
                 # User cancelled, reset to previous
                 self._snap_combo.setCurrentIndex(0)
@@ -349,7 +331,6 @@ class MainWindow(QMainWindow):
         else:
             self._current_snap_value = float(text)
         
-        # Notify viewport of snap value change
         self._signal_hub.notify_snap_value_changed(self._current_snap_value)
         
         # Update status bar
@@ -358,8 +339,12 @@ class MainWindow(QMainWindow):
         else:
             self._statusbar.showMessage("Grid snap: Off", 2000)
     
+    def _on_snap_value_changed_external(self, value):
+        # Sync combo if changed externally (e.g. from loaded prefs, though likely redundant)
+        pass
+
     def _check_save_changes(self) -> bool:
-        """Check if there are unsaved changes and prompt user. Returns True if okay to proceed."""
+        """Check if there are unsaved changes and prompt user."""
         if not self._is_modified:
             return True
         
@@ -373,32 +358,35 @@ class MainWindow(QMainWindow):
         
         if reply == QMessageBox.Save:
             self._save_entity()
-            return not self._is_modified  # Only proceed if save was successful
+            return not self._is_modified
         elif reply == QMessageBox.Discard:
             return True
-        else:  # Cancel
+        else:
             return False
     
+    def _on_entity_changed(self, entity):
+        """Handle entity change from State."""
+        self._update_window_title()
+        
     def _on_entity_modified(self):
         """Handle entity modification."""
         self._is_modified = True
         self._update_window_title()
     
     def _on_entity_saved(self, filepath: str):
-        """Handle entity saved."""
         self._is_modified = False
         self._update_window_title()
     
     def _update_window_title(self):
-        """Update window title."""
+        entity = self._state.current_entity
         title = "Entity Editor"
         
-        if self._current_entity:
+        if entity:
             if self._current_filepath:
                 filename = Path(self._current_filepath).name
                 title = f"{filename} - Entity Editor"
             else:
-                title = f"{self._current_entity.name} - Entity Editor"
+                title = f"{entity.name} - Entity Editor"
         
         if self._is_modified:
             title = f"*{title}"
@@ -406,42 +394,24 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(title)
     
     def _show_about(self):
-        """Show about dialog."""
-        QMessageBox.about(
-            self,
-            "About Entity Editor",
-            "Entity Editor v1.0\n\n"
-            "A modular, extensible 2D entity editor for game development.\n\n"
-            "Features:\n"
-            "• Visual entity editing\n"
-            "• Body part management\n"
-            "• Hitbox editing\n"
-            "• UV mapping\n"
-        )
+        QMessageBox.about(self, "About Entity Editor", "Entity Editor v1.0\n\nA modular, extensible 2D entity editor.")
     
     def _on_undo(self):
-        """Handle undo action."""
-        if self._history_manager and self._history_manager.undo():
-            desc = self._history_manager.get_redo_description()  # What we just undid
-            if desc:
-                self._statusbar.showMessage(f"Undone: {desc}", 2000)
+        if self._state.history.can_undo():
+            self._state.history.undo()
+            # Status update handled via signal
     
     def _on_redo(self):
-        """Handle redo action."""
-        if self._history_manager and self._history_manager.redo():
-            desc = self._history_manager.get_undo_description()  # What we just redid
-            if desc:
-                self._statusbar.showMessage(f"Redone: {desc}", 2000)
-    
-    def _on_undo_redo_state_changed(self, can_undo: bool, can_redo: bool, 
-                                    undo_desc: str, redo_desc: str):
-        """Update undo/redo action states."""
+        if self._state.history.can_redo():
+            self._state.history.redo()
+            
+    def _on_undo_redo_state_changed(self, can_undo: bool, can_redo: bool, undo_desc: str, redo_desc: str):
         self._undo_action.setEnabled(can_undo)
         self._redo_action.setEnabled(can_redo)
         
-        # Update action text with description
         if undo_desc:
             self._undo_action.setText(f"&Undo {undo_desc}")
+            self._statusbar.showMessage(f"Undo available: {undo_desc}", 2000)
         else:
             self._undo_action.setText("&Undo")
         
@@ -450,9 +420,10 @@ class MainWindow(QMainWindow):
         else:
             self._redo_action.setText("&Redo")
     
-    def get_history_manager(self) -> HistoryManager:
+    def get_history_manager(self) -> EditorState: # Changed return type to EditorState
         """Get the history manager for use by panels."""
-        return self._history_manager
+        # Panels should now interact with EditorState directly or via its history service
+        return self._state
     
     def closeEvent(self, event):
         """Handle window close event."""
