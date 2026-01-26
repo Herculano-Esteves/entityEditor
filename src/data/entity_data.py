@@ -171,6 +171,7 @@ class BodyPart:
     Contains visual representation (texture + UV) and associated hitboxes.
     """
     name: str = "BodyPart"
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
     position: Vec2 = field(default_factory=Vec2)
     size: Vec2 = field(default_factory=lambda: Vec2(64.0, 64.0))
     texture_path: str = ""  # Relative or absolute path to texture file
@@ -197,6 +198,7 @@ class BodyPart:
         """Convert to dictionary for serialization."""
         return {
             "name": self.name,
+            "id": self.id,
             "position": self.position.to_dict(),
             "size": self.size.to_dict(),
             "texture_path": self.texture_path,
@@ -216,6 +218,7 @@ class BodyPart:
         """Create from dictionary."""
         return cls(
             name=data.get("name", "BodyPart"),
+            id=data.get("id", str(uuid.uuid4())),
             position=Vec2.from_dict(data.get("position", {})),
             size=Vec2.from_dict(data.get("size", {"x": 64.0, "y": 64.0})),
             texture_path=data.get("texture_path", ""),

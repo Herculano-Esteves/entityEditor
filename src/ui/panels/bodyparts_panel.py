@@ -295,11 +295,9 @@ class BodyPartsPanel(QWidget):
             self._state.selection.clear_selection()
         else:
             self._state.selection.clear_selection()
-            for i, bp in enumerate(selected_bps):
-                if i == 0:
-                    self._state.selection.set_selection(bp)
-                else:
-                    self._state.selection.add_to_selection(bp)
+            # Selection service now handles IDs internally, so passing objects is fine.
+            # It will extract .id from them.
+            self._state.selection.select_bodyparts(selected_bps)
                     
         self._state.selection.blockSignals(False)
         get_signal_hub().notify_bodyparts_selection_changed(selected_bps)
@@ -310,12 +308,18 @@ class BodyPartsPanel(QWidget):
         self._bodyparts_list.blockSignals(True)
         self._bodyparts_list.clearSelection()
         
+        # State now returns objects that match IDs.
+        # However, the objects returned by `selected_body_parts` might be NEW objects if undo happened.
+        # We must match by ID against the widget items.
+        
         selected_bps = self._state.selection.selected_body_parts
+        selected_ids = {bp.id for bp in selected_bps}
         
         for i in range(self._bodyparts_list.count()):
             item = self._bodyparts_list.item(i)
             bp = item.data(Qt.UserRole)
-            if bp in selected_bps:
+            # Compare IDs, not object references
+            if bp.id in selected_ids:
                 item.setSelected(True)
                 
         self._bodyparts_list.blockSignals(False)
@@ -421,7 +425,7 @@ class BodyPartsPanel(QWidget):
         if not self._state.current_entity: return
         
         count = len(self._state.current_entity.body_parts)
-        bp = BodyPart(f"BodyPart_{count}", Vec2(0,0), Vec2(64,64))
+        bp = BodyPart(name=f"BodyPart_{count}", position=Vec2(0,0), size=Vec2(64,64))
         
         if self._state.history:
             self._state.history.execute(AddBodyPartCommand(bp))

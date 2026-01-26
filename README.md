@@ -1,49 +1,33 @@
 # Entity Editor
 
-A modular, extensible 2D Entity Editor for character and entity creation for custom game engines.
+A modular 2D Entity Editor designed for creating complex character rigs and entities for custom game engines.
 
 ![Entity Editor](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![PySide6](https://img.shields.io/badge/PySide6-6.6+-green.svg)
+![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
 
 ## Features
 
 ### Entity Management
-- ✅ Create new entities
-- ✅ Load existing entities from disk (.entdef format)
-- ✅ Save entities back to disk
-- ✅ Entity metadata (name, unique ID)
-- ✅ Editable pivot point
+- **Create & Manage**: Easily create, load, and save entities using a robust `.entdef` format.
+- **Metadata**: Manage unique IDs, names, and tags for seamless engine integration.
+- **Pivot Control**: Precise pivot point adjustment for accurate runtime positioning.
 
-### Visual Entity Editor
-- ✅ 2D preview viewport
-- ✅ Display all body parts with textures
-- ✅ Interactive selection
-- ✅ Drag-and-drop repositioning
-- ✅ Zoom and pan controls
-- ✅ Grid overlay
+### Visual Editor
+- **2D Viewport**: Real-time preview with zoom, pan, and grid snapping.
+- **Drag & Drop**: Intuitive direct manipulation of body parts.
+- **Selection**: Box selection and multi-select support for efficient editing.
 
 ### Body Parts
-- ✅ Add / remove / rename body parts
-- ✅ Position and size editing
-- ✅ Texture reference (PNG support)
-- ✅ UV rectangle mapping
-- ✅ Z-order for draw layering
+- **Sprite Management**: Import standard formats (PNG, JPG, BMP).
+- **Transformation**: Rotate, scale, and flip sprites with pixel-perfect precision.
+- **Z-Ordering**: Layer sprites to build complex characters.
+- **UV Editing**: Visual tool for defining texture regions/sub-sprites.
 
 ### Hitboxes
-- ✅ Multiple hitboxes per body part
-- ✅ Visual editing (drag rectangles)
-- ✅ Different hitbox types:
-  - collision
-  - damage
-  - trigger
-  - interaction
-  - custom
-
-### Modular Architecture
-- Signal-based component communication
-- Clean separation of concerns
-- Extensible data models
-- Binary file format with JSON payload
+- **Collision Definition**: Draw precise hitboxes for physics and gameplay logic.
+- **Typed Zones**: Define specific zones for collision, damage, or triggers.
+- **Pixel Precision**: Enforced integer coordinates to prevent sub-pixel logic errors.
 
 ## Installation
 
@@ -54,147 +38,49 @@ A modular, extensible 2D Entity Editor for character and entity creation for cus
 
 ### Setup
 
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/entityEditor.git
-cd entityEditor
-```
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/yourusername/entityEditor.git
+   cd entityEditor
+   ```
 
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+2. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-3. Run the editor:
-```bash
-python main.py
-```
+3. **Run the editor**:
+   ```bash
+   python main.py
+   ```
 
 ## Usage
 
 ### Quick Start
 
-1. **Create Example Entities** (first time):
-```bash
-python generate_examples.py
-```
-
-This creates sample entities in `examples/entities/`:
-- `simple.entdef` - A basic entity with one body part
-- `test_character.entdef` - A character with head, torso, and arms
+1. **Generate Examples** (Optional):
+   Run `python generate_examples.py` to create sample entities in `examples/entities/`.
 
 2. **Open the Editor**:
-```bash
-python main.py
-```
+   Run `python main.py`.
 
-3. **Load an Example**:
-- Click `File → Open...`
-- Navigate to `examples/entities/`
-- Open `test_character.entdef`
+3. **Create a New Entity**:
+   - Go to `File → New Entity` (Ctrl+N).
+   - Use the **Body Parts** panel to add visual components.
+   - Use the **Hitbox** panel to add logic zones.
+   - Save your work via `File → Save` (Ctrl+S).
 
-### Creating Entities
+### Controls
 
-1. **New Entity**: `File → New Entity` or `Ctrl+N`
-2. **Add Body Parts**: In the Body Parts panel, click "Add"
-3. **Edit Properties**: Select a body part and edit position, size, etc.
-4. **Add Texture**: Click "Browse..." to select a PNG texture
-5. **Position Visually**: Drag body parts in the viewport
-6. **Add Hitboxes**: Select a body part, then click "Add Hitbox" in the Hitbox panel
-7. **Save**: `File → Save` or `Ctrl+S`
+- **Left Click**: Select body parts.
+- **Left Click + Drag**: Box select multiple parts.
+- **Right Click + Drag**: Pan the viewport.
+- **Mouse Wheel**: Zoom in/out.
 
-### Viewport Controls
+## Contributing
 
-- **Left Click**: Select body parts
-- **Left Click + Drag**: Move selected body part
-- **Right Click + Drag**: Pan the viewport
-- **Mouse Wheel**: Zoom in/out
+Contributions are welcome! Please feel free to submit a Pull Request.
 
-### File Format
+## License
 
-Entities are saved in `.entdef` (Entity Definition) format:
-- Binary format with magic number validation
-- Version header for compatibility
-- JSON payload for flexibility and debugging
-
-## Project Structure
-
-```
-entityEditor/
-├── main.py                          # Application entry point
-├── requirements.txt                 # Dependencies
-├── generate_examples.py             # Example generator
-│
-├── src/
-│   ├── data/
-│   │   ├── entity_data.py          # Data models (Entity, BodyPart, Hitbox)
-│   │   └── file_io.py              # Binary serialization
-│   │
-│   ├── core/
-│   │   └── signal_hub.py           # Event system
-│   │
-│   ├── rendering/
-│   │   └── texture_manager.py      # Texture loading & caching
-│   │
-│   └── ui/
-│       ├── main_window.py          # Main window with menu bar
-│       ├── panels/
-│       │   ├── entity_panel.py     # Entity properties editor
-│       │   ├── bodyparts_panel.py  # Body parts manager
-│       │   └── hitbox_panel.py     # Hitbox editor
-│       │
-│       └── widgets/
-│           └── viewport_widget.py  # 2D preview viewport
-│
-└── examples/
-    ├── entities/                    # Sample .entdef files
-    └── textures/                    # Sample textures
-```
-
-## Architecture
-
-### Data Models
-- **Entity**: Top-level container with metadata and body parts
-- **BodyPart**: Visual component with position, size, texture, UV mapping
-- **Hitbox**: Collision/interaction area with type and bounds
-- **Vec2**: 2D vector for positions and sizes
-- **UVRect**: Normalized UV coordinates (0.0 to 1.0)
-
-### Signal Hub
-Centralized event dispatcher enables decoupled UI components:
-- Entity loaded/saved/modified signals
-- Body part selection/modification signals
-- Hitbox modification signals
-- Texture loaded signals
-
-### Texture Manager
-Cached texture loading for performance:
-- Load once, reuse everywhere
-- Automatic PNG loading via PIL
-- Size tracking for UV coordinate conversion
-
-## Future Enhancements
-
-The architecture supports easy addition of:
-- **UV Editor Panel**: Visual UV rectangle editing with texture preview
-- **Animation System**: Keyframe-based body part animation
-- **Skeletal Hierarchy**: Parent-child relationships between body parts
-- **Undo/Redo**: Command pattern integration
-- **Export Formats**: JSON, XML, or custom game engine formats
-- **Texture Atlas Support**: Sprite sheet management
-- **Multi-entity Editing**: Edit multiple entities simultaneously
-
-## Development
-
-### Design Philosophy
-1. **Speed of Iteration**: Quick, responsive editing for game developers
-2. **Clarity**: Clean code, clear architecture, well-documented
-3. **Extensibility**: Easy to add new features without breaking existing code
-4. **Decoupling**: No tight coupling to any specific game engine
-
-### Contributing
-This is a game development tool. Contributions focused on usability, performance, and new features are welcome.
-
-## Credits
-
-Created as a professional game development tool. Built with Python 3 and PySide6.
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.

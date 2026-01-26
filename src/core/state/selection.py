@@ -29,15 +29,30 @@ class Selection(QObject):
             return
             
         super().__init__()
-        self._selected_bodyparts: List[BodyPart] = []
-        self._primary_bodypart: Optional[BodyPart] = None
+        self._selected_ids: set[str] = set()
+        self._primary_id: Optional[str] = None
+        
         self._selected_hitbox: Optional[Hitbox] = None
         self._signal_hub = get_signal_hub()
         self._initialized = True
         
     @property
     def selected_bodyparts(self) -> List[BodyPart]:
-        return list(self._selected_bodyparts)
+        """Dynamically resolve selected IDs to current entity body parts."""
+        # We need access to current entity from somewhere to resolve IDs.
+        # Ideally EditorState holds both, but Selection is IN EditorState usually?
+        # Actually EditorState holds Selection.
+        # We can acccess via singleton or passed reference, but this class is initialized in EditorState.
+        # Circular import risk if we import EditorState here? 
+        # Actually EditorState imports Selection. 
+        # We can rely on signal hub or injection, OR iterate over current entity if available?
+        from src.core.state.editor_state import EditorState
+        entity = EditorState().current_entity
+        if not entity: return []
+        
+        # Preserve order from entity list (stable sort) or selection order? 
+        # Usually standard is: Return selected items in render order (entity list order)
+        return [bp for bp in entity.body_parts if bp.id in self._selected_ids]
         
     @property
     def selected_body_parts(self) -> List[BodyPart]:
@@ -46,12 +61,16 @@ class Selection(QObject):
 
     @property
     def primary_bodypart(self) -> Optional[BodyPart]:
-        return self._primary_bodypart
+        if not self._primary_id: return None
+        from src.core.state.editor_state import EditorState
+        entity = EditorState().current_entity
+        if not entity: return None
+        return next((bp for bp in entity.body_parts if bp.id == self._primary_id), None)
         
     @property
     def selected_body_part(self) -> Optional[BodyPart]:
         """Alias for compatibility."""
-        return self._primary_bodypart
+        return self.primary_bodypart
         
     @property
     def selected_hitbox(self) -> Optional[Hitbox]:
@@ -60,11 +79,11 @@ class Selection(QObject):
     @property
     def has_selection(self) -> bool:
         """Return True if any body part is selected."""
-        return len(self._selected_bodyparts) > 0
+        return len(self._selected_ids) > 0
 
     def is_selected(self, bodypart: BodyPart) -> bool:
         """Check if a body part is selected."""
-        return bodypart in self._selected_bodyparts
+        return bodypart.id in self._selected_ids
 
     def is_hitbox_selected(self, hitbox: Hitbox) -> bool:
         """Check if a hitbox is selected."""
@@ -73,11 +92,6 @@ class Selection(QObject):
     def select_bodypart(self, bodypart: Optional[BodyPart], additive: bool = False):
         """
         Select a body part.
-        
-        Args:
-            bodypart: The body part to select (or None to clear)
-            additive: If True, toggles selection of this part while keeping others.
-                      If False, clears other selections.
         """
         if bodypart is None:
             if not additive:
@@ -85,17 +99,18 @@ class Selection(QObject):
             return
             
         if additive:
-            if bodypart in self._selected_bodyparts:
-                self._selected_bodyparts.remove(bodypart)
-                if self._primary_bodypart == bodypart:
-                    self._primary_bodypart = self._selected_bodyparts[0] if self._selected_bodyparts else None
+            if bodypart.id in self._selected_ids:
+                self._selected_ids.remove(bodypart.id)
+                if self._primary_id == bodypart.id:
+                    # Pick new primary?
+                    self._primary_id = next(iter(self._selected_ids)) if self._selected_ids else None
             else:
-                self._selected_bodyparts.append(bodypart)
-                self._primary_bodypart = bodypart
+                self._selected_ids.add(bodypart.id)
+                self._primary_id = bodypart.id
         else:
-            self._selected_bodyparts = [bodypart]
-            self._primary_bodypart = bodypart
-            self._selected_hitbox = None # Selecting a new body part usually clears hitbox selection
+            self._selected_ids = {bodypart.id}
+            self._primary_id = bodypart.id
+            self._selected_hitbox = None 
             
         self._notify()
 
@@ -105,11 +120,10 @@ class Selection(QObject):
 
     def add_to_selection(self, bodypart: BodyPart):
         """Add to selection. Alias for select_bodypart(bp, True)."""
-        if bodypart not in self._selected_bodyparts:
-            self._selected_bodyparts.append(bodypart)
-            # Notify but don't change primary unless it was empty
-            if not self._primary_bodypart:
-                self._primary_bodypart = bodypart
+        if bodypart.id not in self._selected_ids:
+            self._selected_ids.add(bodypart.id)
+            if not self._primary_id:
+                self._primary_id = bodypart.id
             self._notify()
 
     def toggle_selection(self, bodypart: BodyPart):
@@ -117,21 +131,17 @@ class Selection(QObject):
         self.select_bodypart(bodypart, additive=True)
 
     def select_bodyparts(self, bodyparts: List[BodyPart]):
-        """Select a list of body parts (replaces current selection)."""
-        self._selected_bodyparts = list(bodyparts)
-        self._primary_bodypart = bodyparts[0] if bodyparts else None
+        """Select a list of body parts."""
+        self._selected_ids = {bp.id for bp in bodyparts}
+        self._primary_id = bodyparts[0].id if bodyparts else None
         self._selected_hitbox = None
         self._notify()
         
     def select_hitbox(self, hitbox: Optional[Hitbox]):
         """Select a hitbox."""
         self._selected_hitbox = hitbox
-        if hitbox:
-            # Usually selecting a hitbox implies we are editing its parent body part ??
-            # For now keeping it simple.
-            pass
         self._notify()
-        self._signal_hub.notify_hitbox_selected(hitbox) # Legacy sync
+        self._signal_hub.notify_hitbox_selected(hitbox) 
     
     def deselect_hitbox(self):
         """Deselect hitbox."""
@@ -139,14 +149,13 @@ class Selection(QObject):
         
     def clear_selection(self):
         """Clear all selection."""
-        self._selected_bodyparts = []
-        self._primary_bodypart = None
+        self._selected_ids.clear()
+        self._primary_id = None
         self._selected_hitbox = None
         self._notify()
         self._signal_hub.notify_hitbox_selected(None)
 
     def _notify(self):
         self.selection_changed.emit()
-        # Legacy Sync
-        self._signal_hub.notify_bodyparts_selection_changed(self._selected_bodyparts)
-        self._signal_hub.notify_bodypart_selected(self._primary_bodypart)
+        self._signal_hub.notify_bodyparts_selection_changed(self.selected_bodyparts)
+        self._signal_hub.notify_bodypart_selected(self.primary_bodypart)
