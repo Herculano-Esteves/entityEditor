@@ -7,7 +7,7 @@ Panel for managing and editing body parts.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QGroupBox, QFormLayout, QLineEdit, QPushButton, QSpinBox,
-    QLabel, QFileDialog, QCheckBox, QDoubleSpinBox
+    QLabel, QFileDialog, QCheckBox, QDoubleSpinBox, QComboBox
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon
@@ -155,17 +155,11 @@ class BodyPartsPanel(QWidget):
         self._z_spin.editingFinished.connect(self._on_property_changed_finished)
         props_layout.addRow("Z-Order:", self._z_spin)
         
-        # Texture
-        tex_layout = QHBoxLayout()
-        self._tex_path_edit = QLineEdit()
-        self._tex_path_edit.setReadOnly(True)
-        tex_layout.addWidget(self._tex_path_edit)
-        
-        self._tex_browse_btn = QPushButton("...")
-        self._tex_browse_btn.setFixedSize(30, 20)
-        self._tex_browse_btn.clicked.connect(self._on_browse_texture)
-        tex_layout.addWidget(self._tex_browse_btn)
-        props_layout.addRow("Texture:", tex_layout)
+        # Texture (Replaced with ComboBox)
+        self._tex_combo = QComboBox()
+        self._tex_combo.setToolTip("Select Texture ID from Registry")
+        self._tex_combo.currentIndexChanged.connect(self._on_texture_changed)
+        props_layout.addRow("Texture ID:", self._tex_combo)
         
         # UV Editor
         uv_group = QGroupBox("UV Mapping")
@@ -339,15 +333,30 @@ class BodyPartsPanel(QWidget):
             self._rot_spin.setValue(int(bp.rotation))
             self._scale_spin.setValue(int(bp.pixel_scale))
             self._z_spin.setValue(int(bp.z_order))
-            self._tex_path_edit.setText(bp.texture_path or "")
             self._flip_x_check.setChecked(bp.flip_x)
             self._flip_y_check.setChecked(bp.flip_y)
             
-            # UVs updated via Dialog now
+            # Populate Texture Combo
+            self._tex_combo.blockSignals(True)
+            self._tex_combo.clear()
+            
+            registry = self._texture_manager._registry
+            if registry:
+                keys = registry._keys_order
+                self._tex_combo.addItems(keys)
+                
+                if bp.texture_id in keys:
+                    self._tex_combo.setCurrentText(bp.texture_id)
+                else:
+                     # e.g. "ERROR" or unknown
+                    if bp.texture_id:
+                        self._tex_combo.addItem(f"{bp.texture_id} (Missing)")
+                        self._tex_combo.setCurrentText(f"{bp.texture_id} (Missing)")
 
+            self._tex_combo.blockSignals(False)
             
             # Enforce constraints UI
-            has_texture = bool(bp.texture_path)
+            has_texture = bool(bp.texture_id)
             self._size_x_spin.setReadOnly(has_texture)
             self._size_y_spin.setReadOnly(has_texture)
             if has_texture:
@@ -361,6 +370,7 @@ class BodyPartsPanel(QWidget):
             self._props_group.setTitle(f"Properties: {bp.name}")
         else:
             self._name_edit.clear()
+            self._tex_combo.clear()
             self._props_group.setEnabled(False)
             self._props_group.setTitle("Properties (None Selected)")
             
@@ -507,7 +517,6 @@ class BodyPartsPanel(QWidget):
         # If UV changed via dialog, we update size there.
         # Here we only handle manual spinbox changes (none for UV anymore)
 
-
         get_signal_hub().notify_bodypart_modified(bp)
         
         # If size changed, we might need to update spins if we auto-calculated
@@ -544,40 +553,37 @@ class BodyPartsPanel(QWidget):
             bp.flip_y = self._flip_y_check.isChecked()
             get_signal_hub().notify_bodypart_modified(bp)
 
-    def _on_browse_texture(self):
+    def _on_texture_changed(self, index):
+        if self._updating_ui: return
         bp = self._state.selection.selected_body_part
         if not bp: return
         
-        path, _ = QFileDialog.getOpenFileName(self, "Select Texture", "", "Images (*.png *.jpg *.bmp)")
-        if path:
-            if "assets" in path:
-                try:
-                    rel_path = os.path.relpath(path, os.getcwd())
-                    path = rel_path
-                except:
-                   pass
+        tex_id = self._tex_combo.currentText()
+        # Handle "(Missing)" suffix if we accidentally selected it (though user shouldn't be able to select it if we didn't add it)
+        # Actually if we added it, it's selectable.
+        if " (Missing)" in tex_id:
+            tex_id = tex_id.replace(" (Missing)", "")
             
-            bp.texture_path = path
-            self._tex_path_edit.setText(path)
-            
-            # Reset UVs to full on new texture load? Usually yes.
-            bp.uv_rect.x = 0.0
-            bp.uv_rect.y = 0.0
-            bp.uv_rect.width = 1.0
-            bp.uv_rect.height = 1.0
-            
-            # Enforce Size
-            self._enforce_aspect_ratio(bp)
-            
-            get_signal_hub().notify_bodypart_modified(bp)
-            self._update_properties()
+        bp.texture_id = tex_id
+        
+        # Reset UVs to full on new texture load? Usually yes.
+        bp.uv_rect.x = 0.0
+        bp.uv_rect.y = 0.0
+        bp.uv_rect.width = 1.0
+        bp.uv_rect.height = 1.0
+        
+        # Enforce Size
+        self._enforce_aspect_ratio(bp)
+        
+        get_signal_hub().notify_bodypart_modified(bp)
+        self._update_properties()
 
     def _on_visual_uv_edit(self):
         bp = self._state.selection.selected_body_part
-        if not bp or not bp.texture_path: return
+        if not bp or not bp.texture_id: return
         
         # Get texture
-        pixmap = self._texture_manager.get_texture(bp.texture_path)
+        pixmap = self._texture_manager.get_texture(bp.texture_id)
         if not pixmap: return
         
         # Show Dialog
@@ -612,9 +618,9 @@ class BodyPartsPanel(QWidget):
 
     def _enforce_aspect_ratio(self, bp):
         """Enforce strict size based on texture and pixel scale."""
-        if not bp.texture_path: return
+        if not bp.texture_id: return
         
-        tex_size = self._texture_manager.get_texture_size(bp.texture_path)
+        tex_size = self._texture_manager.get_texture_size(bp.texture_id)
         if tex_size:
             w, h = tex_size
             # Calculate pixel size of UV rect

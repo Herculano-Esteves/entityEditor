@@ -28,13 +28,21 @@ class MainWindow(QMainWindow):
     def __init__(self, project=None):
         super().__init__()
         
+
         # Global State
         self._state = EditorState()
         self._state.project = project # Store project in state
 
+        # Initialize Texture Registry
+        from src.common.texture_registry import TextureRegistry
+        from src.tools.entity_editor.rendering import get_texture_manager
+        
+        self.texture_registry = TextureRegistry(project)
+        get_texture_manager().set_registry(self.texture_registry)
         
         # Local Window State
         self._current_filepath: str = None
+
         self._is_modified = False
         
         # Connect to State
@@ -237,11 +245,15 @@ class MainWindow(QMainWindow):
         """Open an existing entity."""
         if not self._check_save_changes():
             return
+            
+        start_dir = ""
+        if self._state.project:
+            start_dir = self._state.project.abs_entities_path
         
         filename, _ = QFileDialog.getOpenFileName(
             self,
             "Open Entity",
-            "",
+            start_dir,
             "Entity Definition (*.entdef);;All Files (*.*)"
         )
         
@@ -270,10 +282,14 @@ class MainWindow(QMainWindow):
     
     def _save_entity_as(self):
         """Save the current entity with a new name."""
+        start_dir = ""
+        if self._state.project:
+            start_dir = self._state.project.abs_entities_path
+            
         filename, _ = QFileDialog.getSaveFileName(
             self,
             "Save Entity As",
-            "",
+            start_dir,
             "Entity Definition (*.entdef);;All Files (*.*)"
         )
         

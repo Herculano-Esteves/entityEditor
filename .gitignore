@@ -43,3 +43,6 @@ Thumbs.db
 
 # Examples
 examples/*
+
+# Files
+session.json

@@ -164,6 +164,7 @@ class Hitbox:
             )
 
 
+
 @dataclass
 class BodyPart:
     """
@@ -174,7 +175,7 @@ class BodyPart:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     position: Vec2 = field(default_factory=Vec2)
     size: Vec2 = field(default_factory=lambda: Vec2(64.0, 64.0))
-    texture_path: str = ""  # Relative or absolute path to texture file
+    texture_id: str = "ERROR"  # Reference to TextureRegistry ID
     uv_rect: UVRect = field(default_factory=UVRect)
     
     # UV flipping (for mirroring sprites)
@@ -201,7 +202,7 @@ class BodyPart:
             "id": self.id,
             "position": self.position.to_dict(),
             "size": self.size.to_dict(),
-            "texture_path": self.texture_path,
+            "texture_id": self.texture_id,
             "uv_rect": self.uv_rect.to_dict(),
             "flip_x": self.flip_x,
             "flip_y": self.flip_y,
@@ -216,12 +217,22 @@ class BodyPart:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'BodyPart':
         """Create from dictionary."""
+        # Migration: Check for 'texture_path' and missing 'texture_id'
+        tid = data.get("texture_id")
+        if not tid:
+            if "texture_path" in data:
+                # Legacy file found. Default to "ERROR".
+                # User can manually re-assign.
+                tid = "ERROR"
+            else:
+                tid = "ERROR"
+
         return cls(
             name=data.get("name", "BodyPart"),
             id=data.get("id", str(uuid.uuid4())),
             position=Vec2.from_dict(data.get("position", {})),
             size=Vec2.from_dict(data.get("size", {"x": 64.0, "y": 64.0})),
-            texture_path=data.get("texture_path", ""),
+            texture_id=tid,
             uv_rect=UVRect.from_dict(data.get("uv_rect", {})),
             flip_x=data.get("flip_x", False),
             flip_y=data.get("flip_y", False),

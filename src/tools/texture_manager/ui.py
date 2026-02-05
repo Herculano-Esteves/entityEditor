@@ -148,7 +148,7 @@ class TextureManagerWindow(QMainWindow):
              self.lbl_preview.setText(f"File not found: {full_path}")
             
     def _on_add(self):
-        dialog = AddTextureDialog(self)
+        dialog = AddTextureDialog(self, self.project)
         if dialog.exec():
             key, path = dialog.get_data()
             if key and path:
@@ -193,9 +193,10 @@ class TextureManagerWindow(QMainWindow):
 
 
 class AddTextureDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, project=None):
         super().__init__(parent)
         self.setWindowTitle("Add Texture")
+        self.project = project
         self.setLayout(QVBoxLayout())
         
         form = QFormLayout()
@@ -222,12 +223,33 @@ class AddTextureDialog(QDialog):
         self.layout().addLayout(btns)
         
     def _browse(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Select Image", "", "Images (*.png *.jpg *.bmp)")
+        start_dir = ""
+        if self.project:
+            start_dir = self.project.abs_assets_root
+            # Try to be more specific: 'textures' folder
+            tex_dir = os.path.join(start_dir, "textures")
+            if os.path.exists(tex_dir):
+                start_dir = tex_dir
+                
+        f, _ = QFileDialog.getOpenFileName(self, "Select Image", start_dir, "Images (*.png *.jpg *.bmp *.tga)")
         if f:
-             # Logic to make relative to assets root if possible
-             # For now just set absolute or relative to CWD
-             # Ideally validation against project should be here
+             # Make relative to assets root if possible
+            if self.project:
+                try:
+                    assets_root = self.project.abs_assets_root
+                    if os.path.commonpath([assets_root, f]) == assets_root:
+                        rel_path = os.path.relpath(f, assets_root)
+                        # Ensure forward slashes for cross-platform consistency
+                        f = rel_path.replace("\\", "/")
+                except ValueError:
+                    pass # Different drive or not subpath
+            
             self.path_edit.setText(f)
+            
+            # Suggest Key if empty
+            if not self.key_edit.text():
+                filename = os.path.splitext(os.path.basename(f))[0]
+                self.key_edit.setText(filename.upper())
                 
     def get_data(self):
         return self.key_edit.text().upper(), self.path_edit.text()

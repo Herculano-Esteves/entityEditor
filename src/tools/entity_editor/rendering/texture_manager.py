@@ -4,100 +4,128 @@ Texture Manager for Entity Editor.
 Handles loading, caching, and managing textures for the editor.
 """
 
+
 from pathlib import Path
 from typing import Dict, Optional, Tuple
-from PySide6.QtGui import QPixmap, QImage
+from PySide6.QtGui import QPixmap, QImage, QPainter, QColor
 from PySide6.QtCore import QSize
 
+from src.common.texture_registry import TextureRegistry
 
 class TextureManager:
     """
     Manages texture loading and caching.
     
     Textures are loaded once and cached for reuse across the application.
+    Now uses Texture ID for lookup via TextureRegistry.
     """
     
     def __init__(self):
         self._texture_cache: Dict[str, QPixmap] = {}
         self._texture_sizes: Dict[str, Tuple[int, int]] = {}
-    
-    def load_texture(self, filepath: str) -> Optional[QPixmap]:
-        """
-        Load a texture from file.
+        self._registry: Optional[TextureRegistry] = None
+        self._failed_ids = set()
+        self._placeholder: Optional[QPixmap] = None
         
-        Args:
-            filepath: Path to the texture file (PNG)
+    def set_registry(self, registry: TextureRegistry):
+        self._registry = registry
+        
+    def _create_placeholder(self) -> QPixmap:
+        """Create a magenta/black checkerboard placeholder."""
+        if self._placeholder:
+            return self._placeholder
             
-        Returns:
-            QPixmap if successful, None if failed
-        """
-        # Check cache first
-        if filepath in self._texture_cache:
-            return self._texture_cache[filepath]
+        size = 64
+        image = QImage(size, size, QImage.Format_RGB32)
+        image.fill(QColor(255, 0, 255)) # Magenta default
         
-        # Validate file exists
-        path = Path(filepath)
-        if not path.exists() or not path.is_file():
-            print(f"Texture file not found: {filepath}")
+        # Draw checkerboard
+        painter = QPainter(image)
+        painter.fillRect(0, 0, size//2, size//2, QColor(0, 0, 0))
+        painter.fillRect(size//2, size//2, size//2, size//2, QColor(0, 0, 0))
+        painter.end()
+        
+        self._placeholder = QPixmap.fromImage(image)
+        return self._placeholder
+
+    def _resolve_path(self, texture_id: str) -> Optional[str]:
+        if not self._registry:
             return None
+        return self._registry._registry.get(texture_id)
+    
+    def load_texture(self, texture_id: str) -> Optional[QPixmap]:
+        """
+        Load a texture by ID. Returns placeholder if missing.
+        """
+        # Check cache
+        if texture_id in self._texture_cache:
+            return self._texture_cache[texture_id]
+            
+        # If we already failed this ID, return placeholder immediately (no spam)
+        if texture_id in self._failed_ids:
+            return self._create_placeholder()
+        
+        # Resolve Path
+        path_str = self._resolve_path(texture_id)
+        if not path_str:
+            # ID not in registry
+            if texture_id not in self._failed_ids:
+                print(f"[TextureManager] ID not found in registry: {texture_id}")
+                self._failed_ids.add(texture_id)
+            return self._create_placeholder()
+
+        # Resolve absolute path
+        path = Path(path_str)
+        if not path.exists():
+            if self._registry and self._registry.project:
+                 path = Path(self._registry.project.abs_assets_root) / path_str
+
+        # Attempt Load
+        if not path.exists() or not path.is_file():
+            print(f"[TextureManager] File not found for ID '{texture_id}': {path}")
+            self._failed_ids.add(texture_id)
+            # Cache the placeholder so we don't try to reload this ID
+            placeholder = self._create_placeholder()
+            self._texture_cache[texture_id] = placeholder
+            self._texture_sizes[texture_id] = (placeholder.width(), placeholder.height())
+            return placeholder
         
         # Load image
         pixmap = QPixmap(str(path))
         if pixmap.isNull():
-            print(f"Failed to load texture: {filepath}")
-            return None
+            print(f"[TextureManager] Failed to load image: {path}")
+            self._failed_ids.add(texture_id)
+            return self._create_placeholder()
         
-        # Cache and return
-        self._texture_cache[filepath] = pixmap
-        self._texture_sizes[filepath] = (pixmap.width(), pixmap.height())
+        # Success - Cache
+        self._texture_cache[texture_id] = pixmap
+        self._texture_sizes[texture_id] = (pixmap.width(), pixmap.height())
         return pixmap
     
-    def get_texture(self, filepath: str) -> Optional[QPixmap]:
-        """
-        Get a cached texture or load if not cached.
-        
-        Args:
-            filepath: Path to the texture file
-            
-        Returns:
-            QPixmap if available, None otherwise
-        """
-        return self.load_texture(filepath)
+    def get_texture(self, texture_id: str) -> Optional[QPixmap]:
+        return self.load_texture(texture_id)
     
-    def get_texture_size(self, filepath: str) -> Optional[Tuple[int, int]]:
-        """
-        Get the size of a texture.
+    def get_texture_size(self, texture_id: str) -> Optional[Tuple[int, int]]:
+        if texture_id in self._texture_sizes:
+            return self._texture_sizes[texture_id]
         
-        Args:
-            filepath: Path to the texture file
-            
-        Returns:
-            (width, height) tuple if texture is loaded, None otherwise
-        """
-        if filepath in self._texture_sizes:
-            return self._texture_sizes[filepath]
-        
-        # Try to load it
-        pixmap = self.load_texture(filepath)
+        pixmap = self.load_texture(texture_id)
         if pixmap:
-            return self._texture_sizes[filepath]
+            return self._texture_sizes[texture_id]
         return None
     
     def clear_cache(self):
-        """Clear all cached textures."""
         self._texture_cache.clear()
         self._texture_sizes.clear()
     
-    def remove_texture(self, filepath: str):
-        """Remove a specific texture from cache."""
-        if filepath in self._texture_cache:
-            del self._texture_cache[filepath]
-        if filepath in self._texture_sizes:
-            del self._texture_sizes[filepath]
+    def remove_texture(self, texture_id: str):
+        if texture_id in self._texture_cache:
+            del self._texture_cache[texture_id]
+        if texture_id in self._texture_sizes:
+            del self._texture_sizes[texture_id]
     
-    def is_cached(self, filepath: str) -> bool:
-        """Check if a texture is currently cached."""
-        return filepath in self._texture_cache
+    def is_cached(self, texture_id: str) -> bool:
+        return texture_id in self._texture_cache
 
 
 # Global texture manager instance
@@ -105,10 +133,6 @@ _texture_manager_instance: Optional[TextureManager] = None
 
 
 def get_texture_manager() -> TextureManager:
-    """
-    Get the global texture manager instance.
-    Creates one if it doesn't exist.
-    """
     global _texture_manager_instance
     if _texture_manager_instance is None:
         _texture_manager_instance = TextureManager()

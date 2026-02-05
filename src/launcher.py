@@ -6,7 +6,9 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QPushButton, QLabel, QAppli
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QFont
 
+
 from src.common.game_project import GameProject
+from src.common.session_manager import SessionManager
 
 # Keep tool imports lazy or direct, as needed
 from src.tools.entity_editor.ui.main_window import MainWindow as EntityEditorWindow
@@ -22,6 +24,9 @@ class Launcher(QWidget):
         self.tool_windows = [] 
         
         self._setup_ui()
+        
+        # Check for last session
+        self._check_last_session()
         
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -72,23 +77,35 @@ class Launcher(QWidget):
         btn.clicked.connect(slot)
         return btn
         
+    def _check_last_session(self):
+        last_project = SessionManager.load_last_project()
+        if last_project and os.path.exists(last_project):
+            print(f"Found last session: {last_project}")
+            self._load_project_from_path(last_project)
+
     def _load_project(self):
         filepath, _ = QFileDialog.getOpenFileName(
             self, "Open Game Project", "", "Game Project (*.gameproj)"
         )
         if filepath:
-            try:
-                self.project_context = GameProject(filepath)
-                self.lbl_project.setText(f"Project: {os.path.basename(filepath)}")
-                self.lbl_project.setStyleSheet("color: #4CAF50; font-weight: bold;")
-                
-                # Enable tools
-                self.btn_editor.setEnabled(True)
-                self.btn_tex.setEnabled(True)
-                
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to load project: {e}")
-                self.project_context = None
+            self._load_project_from_path(filepath)
+
+    def _load_project_from_path(self, filepath):
+        try:
+            self.project_context = GameProject(filepath)
+            self.lbl_project.setText(f"Project: {os.path.basename(filepath)}")
+            self.lbl_project.setStyleSheet("color: #4CAF50; font-weight: bold;")
+            
+            # Enable tools
+            self.btn_editor.setEnabled(True)
+            self.btn_tex.setEnabled(True)
+            
+            # Save session
+            SessionManager.save_last_project(filepath)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load project: {e}")
+            self.project_context = None
 
     def _launch_editor(self):
         if not self.project_context: return

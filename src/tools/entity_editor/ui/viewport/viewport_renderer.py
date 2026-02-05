@@ -86,11 +86,11 @@ class ViewportRenderer:
                 self._draw_selection_highlight(painter, bp)
 
     def _draw_body_part_texture(self, painter: QPainter, bp):
-        if bp.texture_path:
-            pixmap = self._texture_manager.get_texture(bp.texture_path)
+        if bp.texture_id:
+            pixmap = self._texture_manager.get_texture(bp.texture_id)
             if pixmap:
                 # Get UV rectangle in pixel coordinates
-                tex_size = self._texture_manager.get_texture_size(bp.texture_path)
+                tex_size = self._texture_manager.get_texture_size(bp.texture_id)
                 if tex_size:
                     px_x, px_y, px_w, px_h = bp.uv_rect.get_pixel_coords(tex_size[0], tex_size[1])
                     sub_pixmap = pixmap.copy(px_x, px_y, px_w, px_h)
