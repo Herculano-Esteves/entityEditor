@@ -65,6 +65,13 @@ class EditorState(QObject):
         """Get the current loaded entity."""
         return self._entity
         
+    @property
+    def current_filepath(self) -> Optional[str]:
+        return getattr(self, '_current_filepath', None)
+
+    def set_current_filepath(self, filepath: Optional[str]):
+        self._current_filepath = filepath
+        
     def set_entity(self, entity: Optional[Entity]):
         """
         Set the current entity. 

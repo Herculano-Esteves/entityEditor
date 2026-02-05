@@ -21,6 +21,7 @@ class SignalHub(QObject):
     entity_loaded = Signal(object)  # Emitted when a new entity is loaded (passes Entity)
     entity_modified = Signal()       # Emitted when any entity property changes
     entity_saved = Signal(str)       # Emitted when entity is saved (passes filepath)
+    referenced_entity_saved = Signal(str) # Emitted when a referenced entity is saved invalidating cache
     
     # Body part signals
     bodypart_selected = Signal(object)   # Emitted when a body part is selected (passes BodyPart or None)
@@ -69,6 +70,10 @@ class SignalHub(QObject):
     def notify_entity_saved(self, filepath: str):
         """Notify that the entity has been saved."""
         self.entity_saved.emit(filepath)
+
+    def notify_referenced_entity_saved(self, filepath: str):
+        """Notify that a referenced entity has been saved."""
+        self.referenced_entity_saved.emit(filepath)
     
     def notify_bodypart_selected(self, bodypart):
         """Notify that a body part has been selected."""

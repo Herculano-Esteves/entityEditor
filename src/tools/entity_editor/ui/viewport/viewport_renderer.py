@@ -5,6 +5,8 @@ from PySide6.QtGui import QPainter, QPen, QColor, QTransform, QPixmap
 from src.tools.entity_editor.core.state.editor_state import EditorState
 from src.tools.entity_editor.data import Vec2
 from src.tools.entity_editor.rendering import get_texture_manager
+from src.tools.entity_editor.data.entity_data import BodyPartType
+from src.tools.entity_editor.core.entity_manager import get_entity_manager
 
 class ViewportRenderer:
     """
@@ -48,7 +50,10 @@ class ViewportRenderer:
         if self.show_pivot:
             self._draw_pivot(painter, entity)
             
-    def _draw_body_parts(self, painter: QPainter, entity):
+    def _draw_body_parts(self, painter: QPainter, entity, depth=0):
+        if depth > 10: # Max recursion depth
+            return
+
         # Sort by z_index? 
         # Current logic just iterates list (order matters).
         # ViewportWidget Logic:
@@ -62,8 +67,8 @@ class ViewportRenderer:
         # Sort by z-order (ascending)
         body_parts.sort(key=lambda bp: bp.z_order)
         
-        # Selection on Top Logic
-        if self._state.selection_on_top and self._state.selection.has_selection:
+        # Selection on Top Logic (Only at top level, depth 0)
+        if depth == 0 and self._state.selection_on_top and self._state.selection.has_selection:
             # Separate selected from unselected
             unselected = [bp for bp in body_parts if not self._state.selection.is_selected(bp)]
             selected = [bp for bp in body_parts if self._state.selection.is_selected(bp)]
@@ -78,12 +83,68 @@ class ViewportRenderer:
             if not bp.visible:
                 continue
             
-            # Draw Texture
-            self._draw_body_part_texture(painter, bp)
+            if bp.part_type == BodyPartType.ENTITY_REF:
+                self._draw_entity_ref(painter, bp, depth + 1)
+            else:
+                # Draw Texture
+                self._draw_body_part_texture(painter, bp)
             
-            # Draw Selection Outline
+            # Draw Selection Outline (Only checks top-level selection context)
             if self._state.selection.is_selected(bp):
                 self._draw_selection_highlight(painter, bp)
+
+    def _draw_entity_ref(self, painter: QPainter, bp, depth):
+        if not bp.entity_ref:
+            # Empty ref, maybe draw placeholder
+            self._draw_placeholder(painter, bp, QColor(100, 50, 50, 128))
+            return
+
+        ref_entity = get_entity_manager().get_entity_def(bp.entity_ref)
+        if not ref_entity:
+            # Failed to load
+            self._draw_placeholder(painter, bp, QColor(255, 0, 0, 128))
+            return
+            
+        # Apply transform
+        # We need to transform the painter to the body part's coordinate system
+        painter.save()
+        
+        center_x = bp.position.x + bp.size.x / 2
+        center_y = bp.position.y + bp.size.y / 2
+        
+        painter.translate(center_x, center_y)
+        if bp.rotation != 0:
+            painter.rotate(bp.rotation)
+        if bp.pixel_scale != 1:
+            painter.scale(bp.pixel_scale, bp.pixel_scale) 
+        if bp.flip_x or bp.flip_y:
+            sx = -1 if bp.flip_x else 1
+            sy = -1 if bp.flip_y else 1
+            painter.scale(sx, sy)
+            
+        # Apply Pivot Offset
+        # This shifts the "Child Pivot" relative to the "BodyPart Center".
+        painter.translate(bp.pivot_offset.x, bp.pivot_offset.y)
+        
+        # Ref entity is centered around ITS pivot.
+        # But we are currently at the center of the BodyPart rect.
+        # If we draw the Ref Entity at (0,0), its Pivot will be at the center of BodyPart.
+        # This seems correct for "attaching" an object.
+        
+        # However, Ref Entity rendering (via _draw_body_parts) assumes coordinates are relative to Entity Pivot.
+        # So drawing at (0,0) here means the Ref Entity's Pivot is co-located with our transformation origin.
+        # Our transformation origin is the center of the BodyPart.
+        # So: RefEntity.Pivot aligns with BodyPart.Center + PivotOffset.
+        
+        # Draw children
+        self._draw_body_parts(painter, ref_entity, depth)
+        
+        painter.restore()
+
+    def _draw_placeholder(self, painter: QPainter, bp, color):
+        painter.setBrush(color)
+        painter.setPen(QPen(QColor(150, 150, 170), 1 / self.zoom))
+        painter.drawRect(QRectF(bp.position.x, bp.position.y, bp.size.x, bp.size.y))
 
     def _draw_body_part_texture(self, painter: QPainter, bp):
         if bp.texture_id:
@@ -263,4 +324,3 @@ class ViewportRenderer:
         if origin_lines:
             painter.setPen(QPen(origin_color, 2 / self.zoom))
             painter.drawLines(origin_lines)
-

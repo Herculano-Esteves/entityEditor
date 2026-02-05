@@ -17,8 +17,7 @@ from .entity_data import Entity
 
 # File format constants
 MAGIC_NUMBER = b'ENTD'  # Entity Definition magic number
-FILE_VERSION = 1
-
+FILE_VERSION = 2 # Updated for Composable Entities
 
 class EntitySerializer:
     """Serializes Entity objects to binary .entdef format."""
@@ -35,6 +34,9 @@ class EntitySerializer:
         Raises:
             IOError: If file cannot be written
         """
+        # Update entity version
+        entity.version = "2.0"
+        
         # Convert entity to JSON
         entity_dict = entity.to_dict()
         json_str = json.dumps(entity_dict, indent=2)

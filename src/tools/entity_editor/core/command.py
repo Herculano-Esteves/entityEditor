@@ -106,16 +106,37 @@ class ModifyBodyPartCommand(Command):
         """Apply a state dictionary to the body part."""
         for key, value in state.items():
             if key == 'position':
-                self.bodypart.position.x = value['x']
-                self.bodypart.position.y = value['y']
+                if isinstance(value, dict):
+                    self.bodypart.position.x = value['x']
+                    self.bodypart.position.y = value['y']
+                else:
+                    self.bodypart.position.x = value.x
+                    self.bodypart.position.y = value.y
             elif key == 'size':
-                self.bodypart.size.x = value['x']
-                self.bodypart.size.y = value['y']
+                if isinstance(value, dict):
+                    self.bodypart.size.x = value['x']
+                    self.bodypart.size.y = value['y']
+                else:
+                    self.bodypart.size.x = value.x
+                    self.bodypart.size.y = value.y
             elif key == 'uv_rect':
-                self.bodypart.uv_rect.x = value['x']
-                self.bodypart.uv_rect.y = value['y']
-                self.bodypart.uv_rect.width = value['width']
-                self.bodypart.uv_rect.height = value['height']
+                if isinstance(value, dict):
+                    self.bodypart.uv_rect.x = value['x']
+                    self.bodypart.uv_rect.y = value['y']
+                    self.bodypart.uv_rect.width = value['width']
+                    self.bodypart.uv_rect.height = value['height']
+                else:
+                    self.bodypart.uv_rect.x = value.x
+                    self.bodypart.uv_rect.y = value.y
+                    self.bodypart.uv_rect.width = value.width
+                    self.bodypart.uv_rect.height = value.height
+            elif key == 'pivot_offset':
+                if isinstance(value, dict):
+                    self.bodypart.pivot_offset.x = value['x']
+                    self.bodypart.pivot_offset.y = value['y']
+                else:
+                    self.bodypart.pivot_offset.x = value.x
+                    self.bodypart.pivot_offset.y = value.y
             else:
                 setattr(self.bodypart, key, value)
     

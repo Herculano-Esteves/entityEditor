@@ -165,6 +165,11 @@ class Hitbox:
 
 
 
+class BodyPartType(int, Enum):
+    SIMPLE = 0
+    ENTITY_REF = 1
+
+
 @dataclass
 class BodyPart:
     """
@@ -193,7 +198,15 @@ class BodyPart:
     # Visual properties
     rotation: float = 0.0  # Rotation in degrees
     z_order: int = 0       # Draw order (higher = drawn on top)
+    
+    # Pivot Offset (for Entity References)
+    # Allows the Entity Pivot to be offset from the BodyPart Center.
+    pivot_offset: Vec2 = field(default_factory=Vec2)
     visible: bool = True
+    
+    # Nested/Composable Entity support
+    part_type: BodyPartType = BodyPartType.SIMPLE
+    entity_ref: str = "" # Name or ID of the referenced entity definition (if part_type == ENTITY_REF)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -211,7 +224,10 @@ class BodyPart:
             "pixel_scale": self.pixel_scale,
             "rotation": self.rotation,
             "z_order": self.z_order,
-            "visible": self.visible
+            "visible": self.visible,
+            "part_type": int(self.part_type),
+            "entity_ref": self.entity_ref,
+            "pivot_offset": self.pivot_offset.to_dict()
         }
     
     @classmethod
@@ -226,6 +242,13 @@ class BodyPart:
                 tid = "ERROR"
             else:
                 tid = "ERROR"
+        
+        # Handle part_type migration
+        pt_val = data.get("part_type", 0)
+        try:
+            pt = BodyPartType(pt_val)
+        except ValueError:
+            pt = BodyPartType.SIMPLE
 
         return cls(
             name=data.get("name", "BodyPart"),
@@ -241,7 +264,10 @@ class BodyPart:
             pixel_scale=data.get("pixel_scale", 1),
             rotation=data.get("rotation", 0.0),
             z_order=data.get("z_order", 0),
-            visible=data.get("visible", True)
+            visible=data.get("visible", True),
+            part_type=pt,
+            entity_ref=data.get("entity_ref", ""),
+            pivot_offset=Vec2.from_dict(data.get("pivot_offset", {}))
         )
 
 

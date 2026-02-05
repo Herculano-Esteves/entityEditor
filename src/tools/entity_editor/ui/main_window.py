@@ -36,9 +36,11 @@ class MainWindow(QMainWindow):
         # Initialize Texture Registry
         from src.common.texture_registry import TextureRegistry
         from src.tools.entity_editor.rendering import get_texture_manager
+        from src.tools.entity_editor.core.entity_manager import get_entity_manager
         
         self.texture_registry = TextureRegistry(project)
         get_texture_manager().set_registry(self.texture_registry)
+        get_entity_manager().set_project(project)
         
         # Local Window State
         self._current_filepath: str = None
@@ -237,6 +239,7 @@ class MainWindow(QMainWindow):
         
         # Update State (This is the critical fix)
         self._state.set_entity(new_entity)
+        self._state.set_current_filepath(None)
         
         self._update_window_title()
         self._statusbar.showMessage("New entity created")
@@ -267,6 +270,7 @@ class MainWindow(QMainWindow):
             
             # Update State
             self._state.set_entity(entity)
+            self._state.set_current_filepath(filename)
             
             self._update_window_title()
             self._statusbar.showMessage(f"Opened: {Path(filename).name}")
@@ -285,6 +289,11 @@ class MainWindow(QMainWindow):
         start_dir = ""
         if self._state.project:
             start_dir = self._state.project.abs_entities_path
+            
+        # Pre-fill filename with entity name
+        entity = self._state.current_entity
+        if entity and entity.name:
+            start_dir = os.path.join(start_dir, f"{entity.name}.entdef")
             
         filename, _ = QFileDialog.getSaveFileName(
             self,
@@ -305,7 +314,9 @@ class MainWindow(QMainWindow):
 
         try:
             EntitySerializer.save(entity, filepath)
+            EntitySerializer.save(entity, filepath)
             self._current_filepath = filepath
+            self._state.set_current_filepath(filepath)
             self._is_modified = False
             
             self._signal_hub.notify_entity_saved(filepath)
@@ -319,10 +330,17 @@ class MainWindow(QMainWindow):
         entity = self._state.current_entity
         if not entity: return
         
+        start_dir = ""
+        if self._state.project:
+            start_dir = self._state.project.abs_entities_path
+            
+        if entity.name:
+            start_dir = os.path.join(start_dir, f"{entity.name}.json")
+        
         filename, _ = QFileDialog.getSaveFileName(
             self,
             "Export Entity as JSON",
-            "",
+            start_dir,
             "JSON Files (*.json);;All Files (*.*)"
         )
         

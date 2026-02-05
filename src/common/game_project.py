@@ -15,6 +15,7 @@ class GameProject:
         self.assets_root = "assets"
         self.registry_path = "assets/registry/texture_registry.bin"
         self.entities_path = "assets/entities"
+        self.parts_path = "assets/parts"
         self.fonts_path = "assets/fonts"
         
         if filepath:
@@ -37,6 +38,7 @@ class GameProject:
             self.assets_root = config.get("AssetsRoot", self.assets_root)
             self.registry_path = config.get("RegistryPath", self.registry_path)
             self.entities_path = config.get("EntitiesPath", self.entities_path)
+            self.parts_path = config.get("PartsPath", self.parts_path)
             self.fonts_path = config.get("FontsPath", self.fonts_path)
             
         except Exception as e:
@@ -59,6 +61,11 @@ class GameProject:
     def abs_entities_path(self):
         # Entities are inside assets
         return os.path.abspath(os.path.join(self.abs_assets_root, self.entities_path))
+
+    @property
+    def abs_parts_path(self):
+        # Parts are inside assets
+        return os.path.abspath(os.path.join(self.abs_assets_root, self.parts_path))
 
     @property
     def abs_fonts_path(self):

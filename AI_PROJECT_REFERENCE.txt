@@ -2,239 +2,238 @@
 AI_PROJECT_REFERENCE.txt
 
 PROJECT: Entity Editor
-VERSION: Technical Reference 1.0
-DATE: 2026-01-25
+VERSION: Deep Technical Reference 2.0 (Comprehensive)
+DATE: 2026-02-05
+
+================================================================================
+1. INTRODUCTION & PHILOSOPHY
+================================================================================
+
+This project is a specialized 2D Entity Editor for a game engine. It solves the specific problem of composing "Complex Entities" — game objects made of multiple sprites (Body Parts) and collision boxes (Hitboxes) — outside of the game engine itself.
+
+Design Philosophy:
+1.  **Strict Separation of Data & Logic**: The editor produces data (`.entdef` files). It defines *what* an entity is, not *how* it behaves.
+2.  **Pixel-Perfect Precision**: Used for 2D pixel-art games. Coordinates, sizes, and grids are integer-based where possible.
+3.  **Project-Awareness**: The editor is not just a file viewer; it is a project management tool. It understands the folder structure of the game it is editing via `.gameproj` files.
+4.  **Indirect Asset Linking**: Assets (textures) are referenced by Immutable IDs, not fragile file paths. This allows assets to move without breaking entities.
+
+================================================================================
+2. PROJECT STRUCTURE & MODULES
+================================================================================
+
+Root Directory: `src/`
 
 --------------------------------------------------------------------------------
-1. PROJECT OVERVIEW
+A. LAUNCHER & ENTRY
 --------------------------------------------------------------------------------
-
-What the tool is:
-The Entity Editor is a standalone desktop application built with Python and PySide6 (Qt). It allows game developers to define 2D game "Entities" composed of multiple visual "Body Parts" (sprites) and logical "Hitboxes".
-
-What problem it solves:
-It decouples the definition of complex 2D compound objects from the game engine. Instead of hardcoding relative positions, uvs, and collision boxes in code or using a generic engine editor, this tool provides a specialized environment for pixel-perfect assembly of character rigs, props, or interactive objects.
-
-Development Stage:
-The project is in an active "Alpha" state.
-- Core systems (Data, Rendering, UI, IO) are implemented and functional.
-- Recent feature pushes have added usability constraints (Z-order, naming uniqueness, isolation).
-- Architectural transitions are in progress (e.g., centralizing state management).
-- Refactoring is ongoing to ensure maintainability over performance.
+- `launcher.py`: The entry point.
+    - **Responsibilities**:
+        1. Checks `session_manager` for the last opened project.
+        2. If found, loads it and starts `MainWindow`.
+        3. If not, prompts user to select a `.gameproj`.
+    - **Key Dependencies**: `sys`, `QApplication`, `MainWindow`.
 
 --------------------------------------------------------------------------------
-2. HIGH-LEVEL ARCHITECTURE
+B. COMMON (`src/common/`) - Shared Utilities
 --------------------------------------------------------------------------------
-
-Folder Structure:
-src/
-  core/         -> Application logic, state management, command pattern (Undo/Redo), signaling.
-  data/         -> Pure data models (dataclasses) and serialization logic.
-  rendering/    -> Resources management (TextureManager).
-  ui/           -> All Qt-based interface code.
-    dialogs/    -> Modal windows (UV Editor).
-    panels/     -> Dockable property editors (BodyParts, Hitboxes).
-    viewport/   -> The 2D canvas (Widget, Renderer, Tools, Controller).
-    widgets/    -> Reusable custom widgets.
-
-Major Systems:
-
-1. State Management (src.core.state)
-   - 'EditorState' is the singleton-like source of truth.
-   - It holds the 'Entity', manages 'Selection', and 'HistoryService'.
-   - It acts as the bridge between logic and UI, partially replacing the legacy 'SignalHub'.
-
-2. Signal System (src.core.signal_hub)
-   - A central event bus used to decouple components.
-   - UI components emit signals here; other components listen.
-   - NOTE: This is currently being superseded by direct signals in 'EditorState', resulting in a mix of patterns.
-
-3. Undo/Redo (src.core.command)
-   - Implements the Command Pattern.
-   - All model mutations are encapsulated in Command classes (e.g., AddBodyPartCommand).
-   - 'HistoryService' manages the undo stack.
-
-4. Rendering (src.ui.viewport.viewport_renderer)
-   - Uses QPainter for immediate mode rendering.
-   - Decoupled from the generic QWidget logic.
-
-Data Flow:
-User Action (UI) -> Tool/Panel Logic -> Creates Command -> HistoryService Executes Command -> Model Updated -> Signal Emitted -> UI Refreshes.
+- `game_project.py` -> `class GameProject`
+    - Represents the configuration of the game being edited.
+    - **Attributes**:
+        - `root_dir`: Absolute path to the project folder.
+        - `assets_root`: Relative path to assets (default: "assets").
+        - `entities_path`: Relative path to entity storage.
+    - **Methods**:
+        - `load(filepath)`: Parses `.gameproj` (INI-style key=value).
+        - `resolve_path(rel_path)`: Converts project-relative path to absolute system path.
+    
+- `session_manager.py` -> `class SessionManager`
+    - Manages `last_session.json` in the user's app data or local folder.
+    - **Purpose**: "Remember where I left off".
+    
+- `texture_registry.py` -> `class TextureRegistry`
+    - **Critical Component**: The database of Texture IDs.
+    - **Structure**: simple dictionary `{"HERO_IDLE": "textures/hero/idle.png"}`.
+    - **Persistence**: 
+        - Primary: `texture_registry.bin` (Binary dict).
+        - Debug: `texture_registry.json`.
+    - **API**: `get(id)`, `add_texture(key, path)`, `save()`.
 
 --------------------------------------------------------------------------------
-3. DATA MODELS
+C. CORE (`src/tools/entity_editor/core/`) - Application Logic
 --------------------------------------------------------------------------------
+- `state/editor_state.py` -> `class EditorState`
+    - **The Brain**. Singleton-patterned access to the application state.
+    - **Holds**:
+        - `current_entity`: The `Entity` object being edited.
+        - `project`: The active `GameProject`.
+        - `selection`: `Selection` object (tracks selected BodyParts/Hitboxes).
+        - `grid_settings`: Visibility and size of the grid.
+    - **Signals**: Emits `entity_changed`, `selection_changed`, `grid_changed`.
+    
+- `command.py` -> `class Command`, `class AddBodyPartCommand`, etc.
+    - **Undo/Redo System**: Implements the Command Pattern.
+    - Every action (Move, Rename, Add, Delete) is a class.
+    - `do()`: Executes logic.
+    - `undo()`: Reverses logic.
+    
+- `services/history_service.py` -> `class HistoryService`
+    - Manages the Undo Stack.
+    - Pushes commands, executes them, and notifies listeners.
 
-Defined in: src.data.entity_data
-
-1. Entity
-   - Root container.
-   - Properties: Name, Pivot (Vec2), ID (UUID).
-   - Children: List[BodyPart], List[Hitbox] (Entity-level hitboxes).
-
-2. BodyPart
-   - A visual component.
-   - Properties: Position (Vec2), Size (Vec2), Texture Path, UVRect, Z-Order (int), Visibility (bool).
-   - Transformation: Rotation (float), Pixel Scale (int), Flip X/Y (bool).
-   - Children: List[Hitbox] (attached to this part).
-
-3. Hitbox
-   - A logic/collision rectangle.
-   - Properties: Name, Position (relative), Size, Type (collision/damage/trigger), Enabled (bool).
-   - CONSTRAINTS: Position and Size are STRICT INTEGERS for pixel-perfect logic.
-
-4. UVRect
-   - Normalized coordinates (0.0 - 1.0) defining the texture sub-region.
-
-5. Vec2
-   - Float-based vector class for positions and sizes.
+- `naming_utils.py`
+    - **Rule**: No two BodyParts in an Entity can typically share a name (enforced for easier runtime lookup).
+    - **Function**: `get_unique_name(base, existing_names)` -> adds `_copy1`, `_copy2` suffix.
 
 --------------------------------------------------------------------------------
-4. UI ARCHITECTURE
+D. DATA (`src/tools/entity_editor/data/`) - The Model
 --------------------------------------------------------------------------------
+- `entity_data.py` - **The Schema**
+    - `class Entity`:
+        - `name`: str
+        - `pivot`: Vec2 (Global pivot point)
+        - `body_parts`: List[BodyPart]
+    - `class BodyPart`:
+        - `name`: str
+        - `texture_id`: str (The Registry Key)
+        - `pos`, `size`: Vec2
+        - `uv_rect`: Rect (0-1 normalized)
+        - `z_index`: int
+        - `transform`: Rotation, Scale, Flip
+    - `class Hitbox`:
+        - `rect`: Integer-based rectangle (x, y, w, h).
+        - `type`: CollisionType enum.
 
-Main Window (src.ui.main_window):
-- Uses QMainWindow.
-- Central Widget: ViewportWidget.
-- Dock Widgets: BodyPartsPanel (Right), HitboxPanel (Right/Bottom).
-
-Viewport System (src.ui.viewport):
-- ViewportWidget: Handles Qt events (paint, mouse, key).
-- ViewportRenderer: Pure logic class that paints the Entity state onto a QPainter.
-- SelectTool: Handles mouse interaction logic (hit testing, dragging).
-- ViewportController: Connects the Widget to the State/SignalHub.
-
-Interactions:
-- Mouse: Left Click to Select, Drag to Move/Resize.
-- Tools: Currently only "Select Tool" is fully implemented.
-- Selection behavior mimics rendering order (WYSIWYG).
-
---------------------------------------------------------------------------------
-5. COORDINATE SYSTEMS
---------------------------------------------------------------------------------
-
-1. World Space (Entity Space)
-   - Origin (0,0) is the Entity's Pivot point.
-   - Y-Axis increases downwards (Screen coordinates).
-   - Units: "Virtual Pixels".
-
-2. Body Part Space
-   - Position is relative to World Space Origin.
-   - Rotation is around the Body Part's geometric center (calculated at render time).
-
-3. Hitbox Space
-   - Position (x,y) is relative to the Parent Body Part's top-left corner (position).
-   - Units: strict integer pixels.
-
-4. Texture Space (UVs)
-   - Normalized (0.0 to 1.0).
-   - (0,0) is Top-Left of the texture image.
+- `file_io.py` - **Binary Packer**
+    - Low-level `struct.pack` / `struct.unpack` logic.
+    - Defines the `.entdef` file format spec.
 
 --------------------------------------------------------------------------------
-6. FILE I/O
+E. RENDERING (`src/tools/entity_editor/rendering/`)
 --------------------------------------------------------------------------------
-
-Handled in: src.data.file_io
-
-Current Format: Binary (.entdef)
-- Uses Python 'struct' for packing data.
-- Header string identifier.
-- Sequential packing of Entity props, then BodyParts count, then BodyParts, etc.
-
-Export: JSON
-- Supports debug/interchange export to human-readable JSON.
-
-Saving/Loading Pipeline:
-- State.entity -> to_dict() -> JSON/Binary Packer -> Disk.
-- Disk -> Unpack -> from_dict() -> State.entity.
-
-Limitations:
-- No version migration logic implemented yet. Changing data structure breaks old files.
-- Texture paths are stored as strings; relative path logic is basic.
+- `texture_manager.py` -> `class TextureManager`
+    - **Bridge**: Connects IDs -> Registry -> Files -> QPixmap.
+    - **Caching**: Keeps loaded textures in memory to avoid IO on every frame.
+    - **Fallback**: If `get_texture("MISSING_ID")` is called, it generates a procedural 64x64 Magenta/Black checkerboard texture.
+    - **Path Resolution**: ALWAYS resolves relative to `project.assets_root`.
 
 --------------------------------------------------------------------------------
-7. CURRENT CAPABILITIES
+F. UI - VIEWPORT (`src/tools/entity_editor/ui/viewport/`)
 --------------------------------------------------------------------------------
+- `viewport_widget.py` (`QWidget`)
+    - The raw canvas. Receives `mousePress`, `mouseMove`, `wheelEvent`.
+    - Forwards events to the `ViewportController` or active `Tool`.
+    
+- `viewport_renderer.py`
+    - **Pure Painter**. Accepts an `Entity` + `QPainter` and draws.
+    - **Drafting Order**:
+        1. Grid background.
+        2. Origin Crosshair.
+        3. BodyParts (Sorted by Z-Index).
+        4. Selection Highlight (Outline).
+        5. Hitboxes (Semi-transparent overlay).
+        6. Pivot Points.
 
-Functional:
-- Adding/Removing/Duplicating Body Parts and Hitboxes.
-- Transforming Body Parts (Move, Resize, Rotate, Scale, Flip).
-- Editing UVs via visual dialog.
-- Texture loading (BMP, PNG, JPG).
-- Z-Order sorting and reordering via Drag-and-Drop in list.
-- "Selection on Top" mode for easier editing of layered parts.
-- Isolation Mode ("Solo") for Body Parts.
-- Hitbox visibility toggling.
-- Undo/Redo for all structural and property changes.
-- Naming unique enforcement (automatic _copyN suffixing).
+- `viewport_controller.py`
+    - Coordinates Zoom, Pan, and Tool switching.
 
-Partially Functional:
-- Entity-level Hitboxes (defined in data, but UI primarily focuses on BodyPart hitboxes).
-- Zoom/Pan (Basic implementation exists).
-
---------------------------------------------------------------------------------
-8. KNOWN ISSUES & MISTAKES
---------------------------------------------------------------------------------
-
-Architectural Flaws:
-- SignalHub vs EditorState: There is split reliability on where signals come from. Some parts listen to Command execution, others to SignalHub. Ideally, EditorState should be the sole emitter.
-- Direct Model Mutation: In some interactive tools (like SelectTool dragging), the model (BodyPart) is mutated directly, then a signal is emitted. This bypasses the Command pattern during the drag (for performance), which is acceptable, but "End Drag" must commit a Command to history properly.
-
-Bugs/Inconsistencies:
-- List Scroll Reset: Fixed recently, but relies on manual save/restore in UI code, which is brittle.
-- Duplication Offset: Was removed based on user feedback, duplicates now stack directly on top, which can be confusing visually without the list selection change.
-
-Technical Debt:
-- The `SelectTool` iterates body parts in reverse render order to find click targets. This logic duplicates the Renderer's sort logic. If Renderer changes sorting (e.g., Layer support), SelectTool must be manually updated.
-- `ViewportController` is somewhat anemic; logic leaks into `ViewportWidget` and `SelectTool`.
+- `tools/select_tool.py`
+    - Handles logic for: Clicking to select, Dragging to move, and Resizing via gizmo handles.
+    - **Complex Logic**: Direct Manipulation (during drag) vs Command Commit (on release).
 
 --------------------------------------------------------------------------------
-9. DESIGN PHILOSOPHY
+G. UI - PANELS (`src/tools/entity_editor/ui/panels/`)
 --------------------------------------------------------------------------------
+- `bodyparts_panel.py`
+    - **List View**: Shows hierarchy of parts. Drag-drop for Z-ordering.
+    - **Properties**: Name, Position (SpinBoxes), Size.
+    - **Texture Selector**: A `QComboBox` populated from the `TextureRegistry`. Selecting an ID updates the part.
 
-1. Pixel Precision Over Smoothness
-   - Integers are enforced for positions and sizes.
-   - Snapping logic is aggressive.
-   - Anti-aliasing is explicitly disabled for textures to support pixel art workflows.
-
-2. WYSIWYG Selection
-   - If you see it on top, you select it.
-   - "Selection on Top" mode breaks physical Z-order to aid editing, but interaction logic adapts to match this visual lie.
-
-3. Strict Naming
-   - No two parts can share a name.
-   - The system aggressively renames to avoid conflicts/ambiguity, which aids later export/runtime logic.
-
-4. Modularity
-   - Panels are self-contained.
-   - Renderer is stateless (fed data).
-   - Tools are state machines.
+- `main_window.py`
+    - Orchestrator.
+    - Initializes `EditorState`, `TextureRegistry`.
+    - Sets up Docks, Menu Bar, Tool Bar.
+    - Handles File Open/Save dialogs (with intelligent path defaulting).
 
 --------------------------------------------------------------------------------
-10. EXTENSION GUIDELINES
+3. DATA FLOW EXAMPLE: "User Changes a Texture"
+--------------------------------------------------------------------------------
+1. **User Action**: Selects "HERO_RUN" from the ComboBox in `BodyPartsPanel`.
+2. **UI Handler**: `_on_texture_changed` is triggered.
+3. **Command Creation**: A `ModifyBodyPartCommand` is instantiated with the new `texture_id`.
+4. **Execution**: Command is pushed to `HistoryService`.
+    - `do()`: Updates `body_part.texture_id = "HERO_RUN"`.
+    - Emits `entity_changed` signal.
+5. **Updates**:
+    - `BodyPartsPanel` hears signal -> Refreshes other fields if needed.
+    - `ViewportWidget` hears signal -> Triggers `repaint()`.
+6. **Rendering**:
+    - `ViewportRenderer` asks `TextureManager.get_texture("HERO_RUN")`.
+    - `TextureManager` checks Registry -> Finds "textures/hero_run.png".
+    - Loads image -> Returns QPixmap.
+    - Renderer draws the sprite.
+
+--------------------------------------------------------------------------------
+4. FILE FORMAT SPECIFICATION (.entdef)
+--------------------------------------------------------------------------------
+The binary format is custom and sequential. All strings are Pascal-strings (Int Length + Bytes).
+
+[HEADER]
+- Magic (4 bytes): 'ENTD'
+- Version (2 bytes): 1
+
+[ENTITY BLOCK]
+- Name (String)
+- Pivot X, Y (Float, Float)
+- BodyPart Count (Int)
+
+[BODY PART BLOCK] (Repeated Count times)
+- Name (String)
+- TextureID (String)
+- Pos X, Y (Float, Float)
+- Size W, H (Float, Float)
+- UV X, Y, W, H (Floats, 0-1)
+- Z-Index (Int)
+- Flags (Byte: Visible, FlipX, FlipY)
+- Rotation (Float)
+- Hitbox Count (Int)
+
+[HITBOX BLOCK] (Repeated Hitbox Count times)
+- Name (String)
+- Type (Int Enum)
+- Rect X, Y, W, H (Int)
+
+--------------------------------------------------------------------------------
+5. HOW TO EXTEND THIS PROJECT
 --------------------------------------------------------------------------------
 
-How to add a new property (e.g., Opacity):
-1. DATA: Add `opacity: float = 1.0` to `BodyPart` dataclass in `src.data.entity_data`. Update `to_dict`/`from_dict`.
-2. COMMAND: Update `ModifyBodyPartCommand` in `src.core.command` to handle the new key (generic state application usually handles this via setattr, but verify).
-3. UI: Add QSpinBox/Slider to `BodyPartsPanel`.
-4. LOGIC: Connect UI signal to a handler that constructs a `ModifyBodyPartCommand`.
-5. RENDER: Update `ViewportRenderer` to apply opacity to the QPainter/QPixmap.
+Scenario: Adding "Tint Color" to BodyParts.
 
-Where NOT to add logic:
-- Do not put business logic in `ViewportWidget`. It should only route events.
-- Do not modify data models directly from UI Panels without going through `EditorState` or `Commands` (unless it's a transient drag operation).
+1.  **Modify Data**: 
+    - Go to `src/tools/entity_editor/data/entity_data.py`.
+    - In `BodyPart` dataclass, add `tint: Tuple[int, int, int] = (255, 255, 255)`.
+    - Update `BodyPart.to_dict()` and `from_dict()` to handle this field.
 
---------------------------------------------------------------------------------
-11. DEVELOPMENT ROADMAP (Inferred)
---------------------------------------------------------------------------------
+2.  **Update Serialization**:
+    - Go to `src/tools/entity_editor/data/file_io.py`.
+    - Update `write_body_part` to `pack` 3 unsigned bytes (RGB).
+    - Update `read_body_part` to `unpack` them. **WARNING**: This breaks file compatibility (bump version!).
 
-Immediate priorities:
-1. Complete the migration from `SignalHub` to `EditorState` signals to remove the hybrid architecture.
-2. Refactor `SelectTool` hit detection to use a shared "RenderSorter" helper to eliminate logic duplication with `ViewportRenderer`.
-3. Implement Entity-level Hitbox UI management (currently obscure).
+3.  **Update Logic**:
+    - Go to `src/tools/entity_editor/core/command.py`.
+    - Ensure `ModifyBodyPartCommand` handles the 'tint' attribute generic updating (it usually does if it uses `setattr`).
 
-Future Features:
-- Animation Timeline: The structure (Parts + Transforms) is ready for keyframing.
-- Texture Atlas Support: `UVTile` data classes exist but are underutilized.
-- Skeletal Binding: Parent/Child relationships between BodyParts (currently flat list).
+4.  **Update UI**:
+    - Go to `src/tools/entity_editor/ui/panels/bodyparts_panel.py`.
+    - Add a "Color Picker" button.
+    - Connect button -> Color Dialog -> `Command` creation.
+
+5.  **Update Rendering**:
+    - Go to `src/tools/entity_editor/ui/viewport/viewport_renderer.py`.
+    - Inside `_draw_body_part_texture`:
+        - Retrieve the pixmap.
+        - Create a composition/overlay using `QPainter.CompositionMode_Multiply` with the tint color.
+        - Draw the tinted result.
+
+================================================================================
+END OF REFERENCE
+================================================================================
