@@ -137,6 +137,13 @@ class ModifyBodyPartCommand(Command):
                 else:
                     self.bodypart.pivot_offset.x = value.x
                     self.bodypart.pivot_offset.y = value.y
+            elif key == 'pivot':
+                if isinstance(value, dict):
+                    self.bodypart.pivot.x = value['x']
+                    self.bodypart.pivot.y = value['y']
+                else:
+                    self.bodypart.pivot.x = value.x
+                    self.bodypart.pivot.y = value.y
             else:
                 setattr(self.bodypart, key, value)
     

@@ -67,6 +67,15 @@ class EntityManager:
         # Normalize path separators for comparison
         fs_path = str(Path(filepath).resolve())
         
+        # 0. Register new entity if not exists (Dynamic update)
+        name = os.path.splitext(os.path.basename(filepath))[0]
+        filename = os.path.basename(filepath)
+        
+        if name not in self._name_to_path:
+             print(f"[EntityManager] Registering new entity: {name}")
+             self._name_to_path[name] = fs_path
+             self._name_to_path[filename] = fs_path
+        
         # Check if in cache (need to normalize cache keys too potentially, but let's try direct first)
         keys_to_remove = []
         for cached_path in self._cache:

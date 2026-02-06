@@ -171,6 +171,19 @@ class BodyPartsPanel(QWidget):
         self._z_spin.editingFinished.connect(self._on_property_changed_finished)
         props_layout.addRow("Z-Order:", self._z_spin)
         
+        # Pivot Point
+        self._pivot_x_spin = QSpinBox()
+        self._pivot_x_spin.setRange(-10000, 10000)
+        self._pivot_x_spin.valueChanged.connect(lambda v: self._on_property_changing('pivot_x', v))
+        self._pivot_x_spin.editingFinished.connect(self._on_property_changed_finished)
+        props_layout.addRow("Pivot X:", self._pivot_x_spin)
+        
+        self._pivot_y_spin = QSpinBox()
+        self._pivot_y_spin.setRange(-10000, 10000)
+        self._pivot_y_spin.valueChanged.connect(lambda v: self._on_property_changing('pivot_y', v))
+        self._pivot_y_spin.editingFinished.connect(self._on_property_changed_finished)
+        props_layout.addRow("Pivot Y:", self._pivot_y_spin)
+        
         # Texture (Replaced with ComboBox)
         self._tex_combo = QComboBox()
         self._tex_combo.setToolTip("Select Texture ID from Registry")
@@ -231,9 +244,11 @@ class BodyPartsPanel(QWidget):
         signal_hub.entity_loaded.connect(self._on_entity_loaded)
         signal_hub.bodypart_added.connect(lambda _: self._refresh_list())
         signal_hub.bodypart_removed.connect(lambda _: self._refresh_list())
+        signal_hub.bodypart_removed.connect(lambda _: self._refresh_list())
         signal_hub.bodypart_reordered.connect(self._refresh_list)
         signal_hub.bodypart_modified.connect(self._on_bodypart_modified)
         signal_hub.referenced_entity_saved.connect(self._on_referenced_entity_saved)
+        signal_hub.entity_saved.connect(self._on_global_entity_saved)
             
     def _on_entity_loaded(self, entity):
         self._refresh_list()
@@ -241,6 +256,15 @@ class BodyPartsPanel(QWidget):
         # Auto-refresh geometry for all references on load
         if entity:
             self._validate_all_references(entity)
+
+    def _on_global_entity_saved(self, filepath: str):
+        """Called when ANY entity is saved. Refresh list to get new entities in dropdown."""
+        # Only refresh properties if we are showing the dropdown, to get the new item.
+        # But we don't want to break current selection flow.
+        # Ideally just update the combo? 
+        # For simplicity, if we have a selection, update properties.
+        if self._state.selection.selected_body_part:
+            self._update_properties()
 
     def _on_referenced_entity_saved(self, filepath: str):
         """Called when a referenced entity is saved/updated."""
@@ -440,6 +464,8 @@ class BodyPartsPanel(QWidget):
             self._rot_spin.setValue(int(bp.rotation))
             self._scale_spin.setValue(int(bp.pixel_scale))
             self._z_spin.setValue(int(bp.z_order))
+            self._pivot_x_spin.setValue(int(bp.pivot.x))
+            self._pivot_y_spin.setValue(int(bp.pivot.y))
             
             # Show/Hide based on Type
             is_ref = (bp.part_type == BodyPartType.ENTITY_REF)
@@ -678,6 +704,8 @@ class BodyPartsPanel(QWidget):
             bp.pixel_scale = value
             self._enforce_aspect_ratio(bp) # If texture exists, update size
         elif prop_name == 'z': bp.z_order = value
+        elif prop_name == 'pivot_x': bp.pivot.x = value
+        elif prop_name == 'pivot_y': bp.pivot.y = value
         
         # UVs handled by dialog now
 
@@ -698,7 +726,87 @@ class BodyPartsPanel(QWidget):
             self._updating_ui = False
 
     def _on_property_changed_finished(self):
-        pass
+        """Called when editing finishes (e.g. lost focus)."""
+        bp = self._state.selection.selected_body_part
+        if not bp: return
+        
+        sender = self.sender()
+        prop = None
+        new_val = None
+        
+        # Identify property
+        if sender == self._pos_x_spin: prop, new_val = 'x', self._pos_x_spin.value()
+        elif sender == self._pos_y_spin: prop, new_val = 'y', self._pos_y_spin.value()
+        elif sender == self._size_x_spin: prop, new_val = 'size_x', self._size_x_spin.value()
+        elif sender == self._size_y_spin: prop, new_val = 'size_y', self._size_y_spin.value()
+        elif sender == self._scale_spin: prop, new_val = 'scale', self._scale_spin.value()
+        elif sender == self._rot_spin: prop, new_val = 'rot', self._rot_spin.value()
+        elif sender == self._z_spin: prop, new_val = 'z', self._z_spin.value()
+        elif sender == self._pivot_x_spin: prop, new_val = 'pivot_x', self._pivot_x_spin.value()
+        elif sender == self._pivot_y_spin: prop, new_val = 'pivot_y', self._pivot_y_spin.value()
+        
+        if prop and self._parameter_change_start_value is not None:
+             # Check if actually changed
+             if self._parameter_change_start_value == new_val:
+                 return
+                 
+             # Create Command
+             key_map = {
+                 'x': 'position', 'y': 'position',
+                 'size_x': 'size', 'size_y': 'size',
+                 'scale': 'pixel_scale',
+                 'rot': 'rotation',
+                 'z': 'z_order',
+                 'pivot_x': 'pivot', 'pivot_y': 'pivot'
+             }
+             
+             key = key_map.get(prop)
+             old_state = {}
+             new_state = {}
+             
+             if key == 'position':
+                 old_state[key] = copy.deepcopy(bp.position)
+                 old_vec = Vec2(bp.position.x, bp.position.y)
+                 if prop == 'x': old_vec.x = self._parameter_change_start_value
+                 else: old_vec.y = self._parameter_change_start_value
+                 old_state[key] = old_vec
+                 new_state[key] = copy.deepcopy(bp.position)
+                 
+             elif key == 'size':
+                 old_vec = Vec2(bp.size.x, bp.size.y)
+                 if prop == 'size_x': old_vec.x = self._parameter_change_start_value
+                 else: old_vec.y = self._parameter_change_start_value
+                 old_state[key] = old_vec
+                 new_state[key] = copy.deepcopy(bp.size)
+                 
+                 # AUTO-RESET PIVOT ON MANUAL RESIZE
+                 # "Always be set to center every time it changes size"
+                 new_pivot = Vec2(bp.size.x / 2, bp.size.y / 2)
+                 old_state['pivot'] = copy.deepcopy(bp.pivot)
+                 new_state['pivot'] = new_pivot
+                 # Apply locally
+                 bp.pivot.x = new_pivot.x
+                 bp.pivot.y = new_pivot.y
+                 self._pivot_x_spin.blockSignals(True)
+                 self._pivot_x_spin.setValue(int(new_pivot.x))
+                 self._pivot_y_spin.setValue(int(new_pivot.y))
+                 self._pivot_x_spin.blockSignals(False)
+
+             elif key == 'pivot':
+                 old_vec = Vec2(bp.pivot.x, bp.pivot.y)
+                 if prop == 'pivot_x': old_vec.x = self._parameter_change_start_value
+                 else: old_vec.y = self._parameter_change_start_value
+                 old_state[key] = old_vec
+                 new_state[key] = copy.deepcopy(bp.pivot)
+
+             else:
+                 old_state[key] = self._parameter_change_start_value
+                 new_state[key] = new_val
+                 
+             if self._state.history:
+                 self._state.history.execute(ModifyBodyPartCommand(bp, old_state, new_state))
+                 
+             self._parameter_change_start_value = None
 
     def _on_name_changed(self):
         bp = self._state.selection.selected_body_part
@@ -825,18 +933,40 @@ class BodyPartsPanel(QWidget):
         if " (Missing)" in tex_id:
             tex_id = tex_id.replace(" (Missing)", "")
             
-        bp.texture_id = tex_id
+        # Prepare state change
+        old_state = {
+            'texture_id': bp.texture_id,
+            'uv_rect': copy.deepcopy(bp.uv_rect),
+            'size': copy.deepcopy(bp.size),
+            'pivot': copy.deepcopy(bp.pivot)
+        }
         
-        # Reset UVs to full on new texture load? Usually yes.
-        bp.uv_rect.x = 0.0
-        bp.uv_rect.y = 0.0
-        bp.uv_rect.width = 1.0
-        bp.uv_rect.height = 1.0
+        # Calculate new state
+        tex_size = self._texture_manager.get_texture_size(tex_id)
+        w, h = 64.0, 64.0
+        if tex_size:
+            w = float(tex_size[0] * bp.pixel_scale)
+            h = float(tex_size[1] * bp.pixel_scale)
+            
+        new_pivot = Vec2(w / 2, h / 2)
         
-        # Enforce Size
-        self._enforce_aspect_ratio(bp)
+        new_state = {
+            'texture_id': tex_id,
+            'uv_rect': {'x': 0.0, 'y': 0.0, 'width': 1.0, 'height': 1.0},
+            'size': Vec2(w, h),
+            'pivot': new_pivot
+        }
         
-        get_signal_hub().notify_bodypart_modified(bp)
+        if self._state.history:
+            self._state.history.execute(ModifyBodyPartCommand(bp, old_state, new_state))
+        else:
+            bp.texture_id = tex_id
+            bp.uv_rect.x = 0.0; bp.uv_rect.y = 0.0
+            bp.uv_rect.width = 1.0; bp.uv_rect.height = 1.0
+            bp.size.x = w; bp.size.y = h
+            bp.pivot = new_pivot
+            get_signal_hub().notify_bodypart_modified(bp)
+            
         self._update_properties()
 
     def _on_visual_uv_edit(self):
@@ -893,6 +1023,28 @@ class BodyPartsPanel(QWidget):
             
             bp.size.x = int(round(target_w))
             bp.size.y = int(round(target_h))
+            
+            # Auto-Reset Pivot to Center (User Requirement: "Standard is in the center... always be set to center every time it changes size")
+            bp.pivot.x = bp.size.x / 2
+            bp.pivot.y = bp.size.y / 2
+            
+            # Force update of spins if UI is active?
+            # _update_properties will handle it when called.
+            if not self._updating_ui:
+                self._size_x_spin.blockSignals(True)
+                self._size_y_spin.blockSignals(True)
+                self._pivot_x_spin.blockSignals(True)
+                self._pivot_y_spin.blockSignals(True)
+                
+                self._size_x_spin.setValue(int(bp.size.x))
+                self._size_y_spin.setValue(int(bp.size.y))
+                self._pivot_x_spin.setValue(int(bp.pivot.x))
+                self._pivot_y_spin.setValue(int(bp.pivot.y))
+                
+                self._size_x_spin.blockSignals(False)
+                self._size_y_spin.blockSignals(False)
+                self._pivot_x_spin.blockSignals(False)
+                self._pivot_y_spin.blockSignals(False)
 
     def _on_bodypart_modified(self, bp):
         if bp == self._state.selection.selected_body_part:

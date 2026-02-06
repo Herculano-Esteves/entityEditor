@@ -17,7 +17,7 @@ import copy
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from src.tools.entity_editor.data import Entity, Hitbox, Vec2
+from src.tools.entity_editor.data import Entity, Hitbox, Vec2, HitboxShape
 from src.tools.entity_editor.core import get_signal_hub, AddHitboxCommand, RemoveHitboxCommand, ModifyHitboxCommand
 from src.tools.entity_editor.core import get_signal_hub, AddHitboxCommand, RemoveHitboxCommand, ModifyHitboxCommand
 from src.tools.entity_editor.core.state.editor_state import EditorState
@@ -93,6 +93,12 @@ class HitboxPanel(QWidget):
         self._type_combo.currentTextChanged.connect(self._on_type_changed)
         props_layout.addRow("Type:", self._type_combo)
         
+        # Shape
+        self._shape_combo = QComboBox()
+        self._shape_combo.addItems(["Rectangle", "Circle"])
+        self._shape_combo.currentIndexChanged.connect(self._on_shape_changed)
+        props_layout.addRow("Shape:", self._shape_combo)
+        
         # Position (integers only)
         self._pos_x_spin = QSpinBox()
         self._pos_x_spin.setRange(-10000, 10000)
@@ -104,16 +110,25 @@ class HitboxPanel(QWidget):
         self._pos_y_spin.valueChanged.connect(lambda v: self._on_property_changing('y', v))
         props_layout.addRow("Y (px):", self._pos_y_spin)
         
-        # Size
+        # Size (Width/Height)
         self._width_spin = QSpinBox()
         self._width_spin.setRange(1, 10000)
         self._width_spin.valueChanged.connect(lambda v: self._on_property_changing('w', v))
-        props_layout.addRow("Width (px):", self._width_spin)
+        self._width_label = QLabel("Width (px):")
+        props_layout.addRow(self._width_label, self._width_spin)
         
         self._height_spin = QSpinBox()
         self._height_spin.setRange(1, 10000)
         self._height_spin.valueChanged.connect(lambda v: self._on_property_changing('h', v))
-        props_layout.addRow("Height (px):", self._height_spin)
+        self._height_label = QLabel("Height (px):")
+        props_layout.addRow(self._height_label, self._height_spin)
+        
+        # Radius (for Circle)
+        self._radius_spin = QSpinBox()
+        self._radius_spin.setRange(1, 10000)
+        self._radius_spin.valueChanged.connect(lambda v: self._on_property_changing('r', v))
+        self._radius_label = QLabel("Radius (px):")
+        props_layout.addRow(self._radius_label, self._radius_spin)
         
         # Enabled
         self._enabled_check = QCheckBox("Enabled")
@@ -249,10 +264,22 @@ class HitboxPanel(QWidget):
         if hb:
             self._name_edit.setText(hb.name)
             self._type_combo.setCurrentText(hb.hitbox_type)
+            self._shape_combo.setCurrentIndex(int(hb.shape))
             self._pos_x_spin.setValue(hb.x)
             self._pos_y_spin.setValue(hb.y)
             self._width_spin.setValue(hb.width)
             self._height_spin.setValue(hb.height)
+            self._radius_spin.setValue(hb.radius)
+            
+            # Visibility Logic
+            is_circle = (hb.shape == HitboxShape.CIRCLE)
+            self._width_spin.setVisible(not is_circle)
+            self._width_label.setVisible(not is_circle)
+            self._height_spin.setVisible(not is_circle)
+            self._height_label.setVisible(not is_circle)
+            self._radius_spin.setVisible(is_circle)
+            self._radius_label.setVisible(is_circle)
+            
             self._enabled_check.setChecked(hb.enabled)
             
             self._props_group.setEnabled(True)
@@ -349,6 +376,7 @@ class HitboxPanel(QWidget):
         elif prop == 'y': hb.y = value
         elif prop == 'w': hb.width = value
         elif prop == 'h': hb.height = value
+        elif prop == 'r': hb.radius = value
         elif prop == 'enabled': hb.enabled = value
         
         get_signal_hub().notify_hitbox_modified(hb)
@@ -377,7 +405,16 @@ class HitboxPanel(QWidget):
         if hb:
             hb.hitbox_type = text
             get_signal_hub().notify_hitbox_modified(hb)
+            get_signal_hub().notify_hitbox_modified(hb)
             self._refresh_list() # Update list label
+            
+    def _on_shape_changed(self, index):
+        if self._updating_ui: return
+        hb = self._state.selection.selected_hitbox
+        if hb:
+            hb.shape = HitboxShape(index)
+            get_signal_hub().notify_hitbox_modified(hb)
+            self._update_properties() # Toggle fields
 
     def _on_hitbox_modified(self, hb):
         if hb == self._state.selection.selected_hitbox:

@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt, QRectF, QPointF, QRect, QLineF
 from PySide6.QtGui import QPainter, QPen, QColor, QTransform, QPixmap
 
 from src.tools.entity_editor.core.state.editor_state import EditorState
-from src.tools.entity_editor.data import Vec2
+from src.tools.entity_editor.data import Vec2, HitboxShape
 from src.tools.entity_editor.rendering import get_texture_manager
 from src.tools.entity_editor.data.entity_data import BodyPartType
 from src.tools.entity_editor.core.entity_manager import get_entity_manager
@@ -171,12 +171,7 @@ class ViewportRenderer:
                     
                     painter.save()
                     
-                    if bp.rotation != 0:
-                        center_x = bp.position.x + render_width / 2
-                        center_y = bp.position.y + render_height / 2
-                        painter.translate(center_x, center_y)
-                        painter.rotate(bp.rotation)
-                        painter.translate(-center_x, -center_y)
+                    self._apply_bodypart_transform(painter, bp)
                     
                     target_rect = QRectF(bp.position.x, bp.position.y, render_width, render_height)
                     painter.drawPixmap(target_rect, sub_pixmap, QRectF(sub_pixmap.rect()))
@@ -184,15 +179,37 @@ class ViewportRenderer:
                     painter.restore()
         else:
             # Placeholder for missing texture
-            painter.setBrush(QColor(100, 100, 120, 128))
-            painter.setPen(QPen(QColor(150, 150, 170), 1 / self.zoom))
+            painter.save()
+            self._apply_bodypart_transform(painter, bp)
             painter.drawRect(QRectF(bp.position.x, bp.position.y, bp.size.x, bp.size.y))
+            painter.restore()
 
     def _draw_selection_highlight(self, painter: QPainter, bp):
         pen = QPen(QColor(100, 200, 255), 2 / self.zoom)
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
+        
+        painter.save()
+        self._apply_bodypart_transform(painter, bp)
         painter.drawRect(QRectF(bp.position.x, bp.position.y, bp.size.x, bp.size.y))
+        painter.restore()
+
+    def _apply_bodypart_transform(self, painter: QPainter, bp):
+        """Apply BodyPart's transform (Pivot + Rotation) to the painter state."""
+        if bp.rotation != 0:
+            pivot_world_x = bp.position.x + bp.pivot.x
+            pivot_world_y = bp.position.y + bp.pivot.y
+            
+            painter.translate(pivot_world_x, pivot_world_y)
+            painter.rotate(bp.rotation)
+            painter.translate(-pivot_world_x, -pivot_world_y)
+            
+        # Ref-Entity Pivot Offset (Additional translation if it applies?)
+        # Refer to Step 559: We added painter.translate(bp.pivot_offset.x, ...) for References.
+        # Ideally that should be part of this transform IF it applies to all.
+        # But 'pivot_offset' is specifically for aligning CHILD Entity.
+        # It's an internal render offset, not a "Self Transform".
+        # So we leave it as specific handling for Ref Entity rendering logic below.
 
     def _draw_hitboxes(self, painter: QPainter, entity):
         # Draw BodyPart Hitboxes
@@ -205,8 +222,12 @@ class ViewportRenderer:
             is_selected = self._state.selection.is_selected(bp)
             
             if not has_selection or is_selected:
+                painter.save()
+                self._apply_bodypart_transform(painter, bp)
                 for hitbox in bp.hitboxes:
-                    self._draw_single_hitbox(painter, hitbox, bp.position)
+                    # Pass 0,0 offset because transform handles position
+                    self._draw_single_hitbox(painter, hitbox, Vec2(0, 0))
+                painter.restore()
                     
         # Draw Entity Hitboxes
         if hasattr(entity, 'entity_hitboxes'):
@@ -236,8 +257,28 @@ class ViewportRenderer:
         x = int(offset.x + hitbox.x)
         y = int(offset.y + hitbox.y)
         
-        rect = QRect(x, y, hitbox.width, hitbox.height)
-        painter.drawRect(rect)
+        if hitbox.shape == HitboxShape.CIRCLE:
+             # Draw Circle
+             # x,y is Top-Left of bounding box? Or Center?
+             # Let's assume Middle for Circle usually, BUT for consistency with Rect (x,y=TopLeft), let's stick to Top-Left?
+             # User requested "only radius".
+             # If I toggle between Rect/Circle, position shouldn't jump wildly.
+             # So x,y as Top-Left of bounding box is safest transition.
+             
+             r = hitbox.radius
+             # Center x,y would be x+r, y+r if x,y is top-left.
+             # painter.drawEllipse(center, r, r)
+             
+             cx = x + r
+             cy = y + r
+             painter.drawEllipse(QPointF(cx, cy), r, r)
+             
+             # Logical Rect for handles/selection
+             rect = QRect(x, y, r*2, r*2)
+        else:
+             # Rectangle
+             rect = QRect(x, y, hitbox.width, hitbox.height)
+             painter.drawRect(rect)
         
         # Draw handles if selected?
         # Maybe let tool handle this? Or renderer draws if selected.
@@ -245,7 +286,7 @@ class ViewportRenderer:
             self._draw_resize_handles(painter, rect)
 
     def _draw_resize_handles(self, painter: QPainter, rect: QRect):
-        handle_size = 6 / self.zoom
+        handle_size = 10 / self.zoom
         painter.setBrush(QColor(255, 255, 100))
         painter.setPen(QPen(QColor(100, 100, 100), 1 / self.zoom))
         

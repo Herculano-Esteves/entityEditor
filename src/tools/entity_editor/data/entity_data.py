@@ -11,8 +11,16 @@ This module defines the fundamental data structures used throughout the editor:
 
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Dict, Any
-from enum import Enum
+from enum import Enum, IntEnum
 import uuid
+
+class BodyPartType(IntEnum):
+    SIMPLE = 0
+    ENTITY_REF = 1
+
+class HitboxShape(IntEnum):
+    RECTANGLE = 0
+    CIRCLE = 1
 
 
 @dataclass
@@ -114,6 +122,8 @@ class Hitbox:
     width: int = 32      # Width in pixels (integer only)
     height: int = 32     # Height in pixels (integer only)
     hitbox_type: str = "collision"  # "collision", "damage", "trigger"
+    shape: HitboxShape = HitboxShape.RECTANGLE
+    radius: int = 16     # Radius in pixels (integer only), used if shape is CIRCLE
     enabled: bool = True
     
     def __post_init__(self):
@@ -122,6 +132,7 @@ class Hitbox:
         self.y = int(self.y)
         self.width = int(self.width)
         self.height = int(self.height)
+        self.radius = int(self.radius)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization (ensures integers)."""
@@ -132,6 +143,8 @@ class Hitbox:
             "width": int(self.width),
             "height": int(self.height),
             "hitbox_type": self.hitbox_type,
+            "shape": int(self.shape),
+            "radius": int(self.radius),
             "enabled": self.enabled
         }
     
@@ -147,6 +160,8 @@ class Hitbox:
                 width=int(data.get("width", 32)),
                 height=int(data.get("height", 32)),
                 hitbox_type=data.get("hitbox_type", "collision"),
+                shape=HitboxShape(data.get("shape", 0)),
+                radius=int(data.get("radius", 16)),
                 enabled=data.get("enabled", True)
             )
         # Migrate from old Vec2 format
@@ -199,8 +214,14 @@ class BodyPart:
     rotation: float = 0.0  # Rotation in degrees
     z_order: int = 0       # Draw order (higher = drawn on top)
     
+    # Pivot Point (Relative to Top-Left of BodyPart)
+    # Default is Center (size/2), but explicitly stored here.
+    pivot: Vec2 = field(default_factory=Vec2)
+    
     # Pivot Offset (for Entity References)
     # Allows the Entity Pivot to be offset from the BodyPart Center.
+    # Note: This is separate from 'pivot'. 'pivot' defines rotation center. 
+    # 'pivot_offset' defines the offset of the Child Entity's Pivot from the BodyPart's origin.
     pivot_offset: Vec2 = field(default_factory=Vec2)
     visible: bool = True
     
@@ -227,7 +248,9 @@ class BodyPart:
             "visible": self.visible,
             "part_type": int(self.part_type),
             "entity_ref": self.entity_ref,
-            "pivot_offset": self.pivot_offset.to_dict()
+            "entity_ref": self.entity_ref,
+            "pivot_offset": self.pivot_offset.to_dict(),
+            "pivot": self.pivot.to_dict()
         }
     
     @classmethod
@@ -249,12 +272,19 @@ class BodyPart:
             pt = BodyPartType(pt_val)
         except ValueError:
             pt = BodyPartType.SIMPLE
+            
+        # Migration: Pivot default to center if missing
+        size = Vec2.from_dict(data.get("size", {"x": 64.0, "y": 64.0}))
+        if "pivot" in data:
+            pivot = Vec2.from_dict(data["pivot"])
+        else:
+            pivot = Vec2(size.x / 2, size.y / 2)
 
         return cls(
             name=data.get("name", "BodyPart"),
             id=data.get("id", str(uuid.uuid4())),
             position=Vec2.from_dict(data.get("position", {})),
-            size=Vec2.from_dict(data.get("size", {"x": 64.0, "y": 64.0})),
+            size=size,
             texture_id=tid,
             uv_rect=UVRect.from_dict(data.get("uv_rect", {})),
             flip_x=data.get("flip_x", False),
@@ -267,7 +297,8 @@ class BodyPart:
             visible=data.get("visible", True),
             part_type=pt,
             entity_ref=data.get("entity_ref", ""),
-            pivot_offset=Vec2.from_dict(data.get("pivot_offset", {}))
+            pivot_offset=Vec2.from_dict(data.get("pivot_offset", {})),
+            pivot=pivot
         )
 
 
