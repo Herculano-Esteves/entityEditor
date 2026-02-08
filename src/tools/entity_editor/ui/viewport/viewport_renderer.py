@@ -92,6 +92,10 @@ class ViewportRenderer:
             # Draw Selection Outline (Only checks top-level selection context)
             if self._state.selection.is_selected(bp):
                 self._draw_selection_highlight(painter, bp)
+                
+            # Draw Pivot
+            if self.show_pivot:
+                self._draw_body_part_pivot(painter, bp)
 
     def _draw_entity_ref(self, painter: QPainter, bp, depth):
         if not bp.entity_ref:
@@ -305,10 +309,92 @@ class ViewportRenderer:
             painter.drawEllipse(pt, handle_size, handle_size)
 
     def _draw_pivot(self, painter: QPainter, entity):
-        pivot_size = 10 / self.zoom
-        painter.setPen(QPen(QColor(255, 255, 0), 2 / self.zoom))
-        painter.drawLine(entity.pivot.x - pivot_size, entity.pivot.y, entity.pivot.x + pivot_size, entity.pivot.y)
-        painter.drawLine(entity.pivot.x, entity.pivot.y - pivot_size, entity.pivot.x, entity.pivot.y + pivot_size)
+        # Draw the Entity's Main Pivot (Screen Space)
+        pivot_size = 15 # Pixels
+        width = 2 # Pixels
+        color = QColor(0, 255, 0)
+        
+        center = QPointF(entity.pivot.x, entity.pivot.y)
+        
+        painter.save()
+        screen_pt = painter.transform().map(center)
+        painter.resetTransform()
+        
+        painter.setPen(QPen(color, width))
+        sx = int(screen_pt.x())
+        sy = int(screen_pt.y())
+        
+        if width % 2 != 0:
+             painter.translate(0.5, 0.5)
+             
+        painter.drawLine(sx - pivot_size, sy, sx + pivot_size, sy)
+        painter.drawLine(sx, sy - pivot_size, sx, sy + pivot_size)
+        
+        painter.restore()
+
+    def _draw_body_part_pivot(self, painter: QPainter, bp):
+        is_selected = self._state.selection.is_selected(bp)
+        
+        # Color: Yellow for selected, dim gray/white for unselected?
+        color = QColor(255, 255, 0) if is_selected else QColor(200, 200, 200, 150)
+        size = 8 / self.zoom if is_selected else 5 / self.zoom
+        width = 2 / self.zoom if is_selected else 1 / self.zoom
+        
+        painter.setPen(QPen(color, width))
+        
+        # The pivot is at (bp.position + bp.pivot)
+        # Note: We are drawing in World Coordinates usually, but wait.
+        # _draw_body_parts loop iterates with `_apply_bodypart_transform` potentially applied inside helper methods?
+        # NO.
+        # In `_draw_body_part_texture`, `_apply_bodypart_transform` is called.
+        # In `_draw_selection_highlight`, `_apply_bodypart_transform` is called.
+        # Here, we need to handle transform too?
+        
+        # Actually, the Pivot point ITSELF is the center of rotation.
+        # So applying rotation around the pivot... leaves the pivot in the same spot.
+        # So we can just draw at `bp.position + bp.pivot` directly without complex transform matrix,
+        # UNLESS the parent entity itself is transformed (which it isn't at depth 0, but is at depth > 0).
+        # Wait, `depth > 0` (recursive rendering).
+        # We are inside `_draw_body_parts`.
+        # If depth > 0, the painter is ALREADY transformed by the parent's recursion.
+        
+        # So we just need to draw at local (bp.position + bp.pivot).
+        
+        # Snap to integer coordinates to avoid asymmetry/blur
+        # px = int(bp.position.x + bp.pivot.x)
+        # py = int(bp.position.y + bp.pivot.y)
+        
+        # painter.drawLine(px - size, py, px + size, py)
+        # painter.drawLine(px, py - size, px, py + size)
+        
+        # Draw in Screen Space to avoid pixel offsets/asymmetry
+        center = QPointF(bp.position.x + bp.pivot.x, bp.position.y + bp.pivot.y)
+        
+        painter.save()
+        
+        # Map to Screen Coords
+        screen_pt = painter.transform().map(center)
+        
+        # Reset to Identity (Widget Space)
+        painter.resetTransform()
+        
+        # Pen setup in PIXELS (1px or 2px)
+        px_width = 2 if is_selected else 1
+        px_size = 8 if is_selected else 5
+        
+        painter.setPen(QPen(color, px_width))
+        
+        sx = int(screen_pt.x())
+        sy = int(screen_pt.y())
+        
+        # Align to pixel grid if odd width
+        if px_width % 2 != 0:
+            painter.translate(0.5, 0.5)
+            
+        painter.drawLine(sx - px_size, sy, sx + px_size, sy)
+        painter.drawLine(sx, sy - px_size, sx, sy + px_size)
+        
+        painter.restore()
 
     def _draw_grid(self, painter: QPainter, view_rect: QRectF):
         grid_size = self._state.grid_size

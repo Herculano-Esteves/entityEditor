@@ -19,6 +19,7 @@ from src.tools.entity_editor.core import get_signal_hub
 from src.tools.entity_editor.core.state.editor_state import EditorState
 from src.tools.entity_editor.ui.widgets import ViewportWidget
 from src.tools.entity_editor.ui.panels import EntityPanel, BodyPartsPanel, HitboxPanel
+from src.tools.entity_editor.core.input_manager import InputManager
 
 
 class MainWindow(QMainWindow):
@@ -55,6 +56,10 @@ class MainWindow(QMainWindow):
         self._signal_hub.entity_modified.connect(self._on_entity_modified)
         self._signal_hub.entity_saved.connect(self._on_entity_saved)
         self._signal_hub.snap_value_changed.connect(self._on_snap_value_changed_external)
+        
+        # Input Manager
+        self._input_manager = InputManager(self._state)
+        self._input_manager.setup_shortcuts(self)
         
         # Setup UI
         self.setWindowTitle("Entity Editor")
@@ -113,24 +118,24 @@ class MainWindow(QMainWindow):
         file_menu = menubar.addMenu("&File")
         
         new_action = QAction("&New Entity", self)
-        new_action.setShortcut(QKeySequence.New)
+        new_action.setShortcut(self._input_manager.get_shortcut('new'))
         new_action.triggered.connect(self._new_entity)
         file_menu.addAction(new_action)
         
         open_action = QAction("&Open...", self)
-        open_action.setShortcut(QKeySequence.Open)
+        open_action.setShortcut(self._input_manager.get_shortcut('open'))
         open_action.triggered.connect(self._open_entity)
         file_menu.addAction(open_action)
         
         file_menu.addSeparator()
         
         save_action = QAction("&Save", self)
-        save_action.setShortcut(QKeySequence.Save)
+        save_action.setShortcut(self._input_manager.get_shortcut('save'))
         save_action.triggered.connect(self._save_entity)
         file_menu.addAction(save_action)
         
         save_as_action = QAction("Save &As...", self)
-        save_as_action.setShortcut(QKeySequence.SaveAs)
+        save_as_action.setShortcut(self._input_manager.get_shortcut('save_as'))
         save_as_action.triggered.connect(self._save_entity_as)
         file_menu.addAction(save_as_action)
         
@@ -143,7 +148,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         
         exit_action = QAction("E&xit", self)
-        exit_action.setShortcut(QKeySequence.Quit)
+        exit_action.setShortcut(self._input_manager.get_shortcut('quit'))
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
@@ -151,14 +156,14 @@ class MainWindow(QMainWindow):
         edit_menu = menubar.addMenu("&Edit")
         
         self._undo_action = QAction("&Undo", self)
-        self._undo_action.setShortcut(QKeySequence.Undo)
+        self._undo_action.setShortcut(self._input_manager.get_shortcut('undo'))
         self._undo_action.setShortcutContext(Qt.ApplicationShortcut)
         self._undo_action.triggered.connect(self._on_undo)
         self._undo_action.setEnabled(False)
         edit_menu.addAction(self._undo_action)
         
         self._redo_action = QAction("&Redo", self)
-        self._redo_action.setShortcut(QKeySequence.Redo)
+        self._redo_action.setShortcut(self._input_manager.get_shortcut('redo'))
         self._redo_action.setShortcutContext(Qt.ApplicationShortcut)
         self._redo_action.triggered.connect(self._on_redo)
         self._redo_action.setEnabled(False)

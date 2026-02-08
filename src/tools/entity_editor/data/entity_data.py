@@ -258,6 +258,8 @@ class BodyPart:
             # Size might be needed for selection/bounds? 
             # User didn't explicitly ask to remove size, but texture/uv are removed.
             data["size"] = self.size.to_dict()
+            # Save Pivot for reference too (allows custom rotation point)
+            data["pivot"] = self.pivot.to_dict()
         else:
             # Sprite-specific fields
             data["size"] = self.size.to_dict()

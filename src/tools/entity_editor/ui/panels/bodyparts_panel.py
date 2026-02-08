@@ -631,7 +631,10 @@ class BodyPartsPanel(QWidget):
         if not self._state.current_entity: return
         
         count = len(self._state.current_entity.body_parts)
-        bp = BodyPart(name=f"BodyPart_{count}", position=Vec2(0,0), size=Vec2(64,64))
+        # Default size is 64x64, so pivot should be 32x32 (Center)
+        size = Vec2(64,64)
+        center = Vec2(size.x / 2, size.y / 2)
+        bp = BodyPart(name=f"BodyPart_{count}", position=Vec2(0,0), size=size, pivot=center)
         
         if self._state.history:
             self._state.history.execute(AddBodyPartCommand(bp))
@@ -947,7 +950,8 @@ class BodyPartsPanel(QWidget):
             'texture_id': bp.texture_id,
             'uv_rect': copy.deepcopy(bp.uv_rect),
             'size': copy.deepcopy(bp.size),
-            'pivot': copy.deepcopy(bp.pivot)
+            'pivot': copy.deepcopy(bp.pivot),
+            'position': copy.deepcopy(bp.position)
         }
         
         # Calculate new state
@@ -959,11 +963,21 @@ class BodyPartsPanel(QWidget):
             
         new_pivot = Vec2(w / 2, h / 2)
         
+        # Calculate new position to keep pivot at same World location
+        # OldWorldPivot = OldPos + OldPivot
+        # NewPos = OldWorldPivot - NewPivot
+        old_world_pivot_x = bp.position.x + bp.pivot.x
+        old_world_pivot_y = bp.position.y + bp.pivot.y
+        
+        new_pos_x = old_world_pivot_x - new_pivot.x
+        new_pos_y = old_world_pivot_y - new_pivot.y
+        
         new_state = {
             'texture_id': tex_id,
             'uv_rect': {'x': 0.0, 'y': 0.0, 'width': 1.0, 'height': 1.0},
             'size': Vec2(w, h),
-            'pivot': new_pivot
+            'pivot': new_pivot,
+            'position': Vec2(new_pos_x, new_pos_y)
         }
         
         if self._state.history:
@@ -974,6 +988,7 @@ class BodyPartsPanel(QWidget):
             bp.uv_rect.width = 1.0; bp.uv_rect.height = 1.0
             bp.size.x = w; bp.size.y = h
             bp.pivot = new_pivot
+            bp.position.x = new_pos_x; bp.position.y = new_pos_y
             get_signal_hub().notify_bodypart_modified(bp)
             
         self._update_properties()
