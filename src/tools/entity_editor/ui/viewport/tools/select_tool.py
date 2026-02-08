@@ -197,7 +197,37 @@ class SelectTool(AbstractTool):
             return
 
         hitbox, parent_bp = self._get_hitbox_at(world_pos)
+        
+        # A. Prioritize Selected Hitbox Handle (Check Outside too)
+        selected_hb = self._state.selection.selected_hitbox
+        if selected_hb and selected_hb.enabled:
+             # Find Parent BP
+             parent_bp_sel = None
+             if self._state.current_entity:
+                 for bp in self._state.current_entity.body_parts:
+                     if selected_hb in bp.hitboxes:
+                         parent_bp_sel = bp
+                         break
+             
+             if parent_bp_sel or hasattr(self._state.current_entity, 'entity_hitboxes'):
+                 edge = self._get_hitbox_edge(selected_hb, parent_bp_sel, world_pos)
+                 if edge:
+                     if edge in ['left', 'right']:
+                         self._view.setCursor(Qt.SizeHorCursor)
+                     elif edge in ['top', 'bottom']:
+                         self._view.setCursor(Qt.SizeVerCursor)
+                     elif edge in ['tl', 'br']:
+                         self._view.setCursor(Qt.SizeFDiagCursor)
+                     elif edge in ['tr', 'bl']:
+                         self._view.setCursor(Qt.SizeBDiagCursor)
+                     else:
+                         self._view.setCursor(Qt.SizeAllCursor)
+                     return
+
+        # B. Standard Hit Test (Inside Only)
         if hitbox:
+            # We are inside a hitbox (maybe unselected).
+            # If standard logic allows moving/selecting any hitbox:
             edge = self._get_hitbox_edge(hitbox, parent_bp, world_pos)
             if edge:
                 if edge in ['left', 'right']:
@@ -286,53 +316,101 @@ class SelectTool(AbstractTool):
         if self._resize_edge:
             # Resize Logic
             
-            # Circle Logic: Resize from Center
+            # Circle Logic: Resize respecting opposite anchor
             if self._dragging_hitbox.shape == HitboxShape.CIRCLE:
-                 # Need current center (calculated from start pos + drag start params?)
-                 # Center should stay fixed!
-                 # Start Center:
-                 start_cx = self._drag_start_hitbox_pos.x + self._drag_start_hitbox_size.x/2
-                 start_cy = self._drag_start_hitbox_pos.y + self._drag_start_hitbox_size.y/2
+                 # 1. Start Rect
+                 sx = self._drag_start_hitbox_pos.x
+                 sy = self._drag_start_hitbox_pos.y
+                 sw = self._drag_start_hitbox_size.x
+                 sh = self._drag_start_hitbox_size.y
                  
-                 # Determine new radius based on mouse distance from center?
-                 # Or delta projected onto resize vector?
-                 # Simple approach: Distance from Center to Mouse = New Radius using Corner Drag
-                 # But we have `delta`.
+                 # 2. Calculate New "Candidate" Rect based on delta
+                 nx, ny, nw, nh = sx, sy, sw, sh
                  
-                 # Let's map delta to size change.
-                 # If we drag Right Edge: diff X. Radius += diff X.
-                 # New Radius = Start Radius + (relevant delta)
+                 if self._resize_edge in ['left', 'tl', 'bl']:
+                     nx += delta.x
+                     nw -= delta.x
+                 if self._resize_edge in ['right', 'tr', 'br']:
+                     nw += delta.x
+                 if self._resize_edge in ['top', 'tl', 'tr']:
+                     ny += delta.y
+                     nh -= delta.y
+                 if self._resize_edge in ['bottom', 'bl', 'br']:
+                     nh += delta.y
                  
-                 start_radius = self._drag_start_hitbox_size.x / 2
+                 # 3. Determine New Size (Square)
+                 # Use dominant dimension change? Or straightforward max?
+                 # If edge is horizontal, use Width. If vertical, use Height.
+                 # If corner, use Max.
                  
-                 radius_change = 0
-                 if self._resize_edge == 'right': radius_change = delta.x
-                 elif self._resize_edge == 'left': radius_change = -delta.x
-                 elif self._resize_edge == 'bottom': radius_change = delta.y
-                 elif self._resize_edge == 'top': radius_change = -delta.y
+                 target_size = 0
+                 if self._resize_edge in ['left', 'right']:
+                     target_size = nw
+                 elif self._resize_edge in ['top', 'bottom']:
+                     target_size = nh
                  else:
-                     # Corner? Max component?
-                     # TL: -dx, -dy. 
-                     dx_eff = -delta.x if 'l' in self._resize_edge else delta.x
-                     dy_eff = -delta.y if 't' in self._resize_edge else delta.y
-                     radius_change = max(dx_eff, dy_eff)
+                     target_size = max(nw, nh)
                  
-                 new_radius = start_radius + radius_change
-                 new_radius = max(1, self._snap(new_radius))
+                 # Snap Size?
+                 target_size = max(2, self._snap(target_size)) # Min 2px
+                 # Ensure even? (Optional, but good for integer radius)
+                 if target_size % 2 != 0: target_size += 1
                  
-                 # Apply Center-based resize
-                 # New Width/Height = 2 * r
-                 new_size = new_radius * 2
+                 new_radius = int(target_size / 2)
+                 final_size = new_radius * 2
                  
-                 # New Top-Left = Center - r
-                 new_x = start_cx - new_radius
-                 new_y = start_cy - new_radius
+                 # 4. Re-calculate Position based on Anchor
+                 # Anchor is the "Fixed Point" opposite to drag
                  
+                 # Start Anchors
+                 old_right = sx + sw
+                 old_bottom = sy + sh
+                 old_cx = sx + sw/2
+                 old_cy = sy + sh/2
+                 
+                 final_x = nx # Default
+                 final_y = ny # Default
+                 
+                 if self._resize_edge == 'left':
+                     # Anchor: Right. Center Y fixed.
+                     final_x = old_right - final_size
+                     final_y = old_cy - new_radius
+                 elif self._resize_edge == 'right':
+                     # Anchor: Left. Center Y fixed.
+                     final_x = sx
+                     final_y = old_cy - new_radius
+                 elif self._resize_edge == 'top':
+                     # Anchor: Bottom. Center X fixed.
+                     final_y = old_bottom - final_size
+                     final_x = old_cx - new_radius
+                 elif self._resize_edge == 'bottom':
+                     # Anchor: Top. Center X fixed.
+                     final_y = sy
+                     final_x = old_cx - new_radius
+                 
+                 # Corners
+                 elif self._resize_edge == 'tl':
+                     # Anchor: Bottom-Right
+                     final_x = old_right - final_size
+                     final_y = old_bottom - final_size
+                 elif self._resize_edge == 'tr':
+                     # Anchor: Bottom-Left
+                     final_x = sx
+                     final_y = old_bottom - final_size
+                 elif self._resize_edge == 'bl':
+                     # Anchor: Top-Right
+                     final_x = old_right - final_size
+                     final_y = sy
+                 elif self._resize_edge == 'br':
+                     # Anchor: Top-Left
+                     final_x = sx
+                     final_y = sy
+                     
                  self._dragging_hitbox.radius = int(new_radius)
-                 self._dragging_hitbox.x = int(new_x)
-                 self._dragging_hitbox.y = int(new_y)
-                 self._dragging_hitbox.width = int(new_size)
-                 self._dragging_hitbox.height = int(new_size)
+                 self._dragging_hitbox.x = int(final_x)
+                 self._dragging_hitbox.y = int(final_y)
+                 self._dragging_hitbox.width = int(final_size)
+                 self._dragging_hitbox.height = int(final_size)
 
             else:
                 # Rectangle Logic (Corner/Edge anchored)
@@ -454,8 +532,11 @@ class SelectTool(AbstractTool):
                 continue
             
             # Decoupled Interaction: 
-            # Allow picking any hitbox regardless of selection state.
-            # treating hitboxes as separate entities visually.
+            # Only allow picking hitboxes if they are currently visible
+            # ViewportRenderer Logic: "Only draw hitboxes if this is the selected body part, or no body part is selected"
+            
+            if self._state.selection.has_selection and not self._state.selection.is_selected(bp):
+                continue
             
             # Create Transform for Rotation/Pivot
             pivot_x = bp.position.x + bp.pivot.x
@@ -555,7 +636,7 @@ class SelectTool(AbstractTool):
             w = hitbox.radius * 2
             h = hitbox.radius * 2
         
-        margin = 10 / self._view.zoom if hasattr(self._view, 'zoom') else 10
+        margin = 7 / self._view.zoom if hasattr(self._view, 'zoom') else 7
         
         l = abs(check_x - x) < margin
         r = abs(check_x - (x + w)) < margin

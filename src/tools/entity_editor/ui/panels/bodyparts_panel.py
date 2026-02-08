@@ -15,7 +15,7 @@ import sys
 import os
 import copy
 import re
-import uuid
+
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from src.tools.entity_editor.data.entity_data import Entity, BodyPart, Vec2, UVRect, BodyPartType
 from src.tools.entity_editor.core.entity_manager import get_entity_manager
 from src.tools.entity_editor.core.geometry_utils import calculate_entity_bounds
-from src.tools.entity_editor.core import get_signal_hub, AddBodyPartCommand, RemoveBodyPartCommand, MoveBodyPartCommand, ModifyBodyPartCommand
+from src.tools.entity_editor.core import get_signal_hub, AddBodyPartCommand, RemoveBodyPartCommand, RemoveBodyPartsCommand, MoveBodyPartCommand, ModifyBodyPartCommand
 from src.tools.entity_editor.core.state.editor_state import EditorState
 from src.tools.entity_editor.rendering import get_texture_manager
 from src.tools.entity_editor.ui.dialogs.uv_editor_dialog import UVEditorDialog
@@ -431,13 +431,13 @@ class BodyPartsPanel(QWidget):
         # We must match by ID against the widget items.
         
         selected_bps = self._state.selection.selected_body_parts
-        selected_ids = {bp.id for bp in selected_bps}
+        selected_objects = set(selected_bps)
         
         for i in range(self._bodyparts_list.count()):
             item = self._bodyparts_list.item(i)
             bp = item.data(Qt.UserRole)
-            # Compare IDs, not object references
-            if bp.id in selected_ids:
+            # Compare object references
+            if bp in selected_objects:
                 item.setSelected(True)
                 
         self._bodyparts_list.blockSignals(False)
@@ -640,14 +640,24 @@ class BodyPartsPanel(QWidget):
             get_signal_hub().notify_bodypart_added(bp)
 
     def _on_remove_bodypart(self):
-        bp = self._state.selection.selected_body_part
-        if not bp: return
+        # Update: Handle multiple selection
+        selected_items = self._bodyparts_list.selectedItems()
+        if not selected_items: return
+        
+        selected_bps = [item.data(Qt.UserRole) for item in selected_items]
+        if not selected_bps: return
         
         if self._state.history:
-            self._state.history.execute(RemoveBodyPartCommand(bp))
+            # Use batch command for atomic removal
+            self._state.history.execute(RemoveBodyPartsCommand(selected_bps))
+            # Selection clearing is handled by signal updates usually, but we can force clear if needed.
+            # But let the signal hub do its job.
         else:
-            self._state.current_entity.remove_body_part(bp)
-            get_signal_hub().notify_bodypart_removed(bp)
+            # Fallback (manual loop, though history should always be there)
+            for bp in selected_bps:
+                if bp in self._state.current_entity.body_parts:
+                    self._state.current_entity.remove_body_part(bp)
+                    get_signal_hub().notify_bodypart_removed(bp)
 
     def _on_duplicate_bodypart(self):
         bp = self._state.selection.selected_body_part
@@ -657,7 +667,6 @@ class BodyPartsPanel(QWidget):
         new_name = generate_unique_name(bp.name, existing_names)
         
         new_bp = copy.deepcopy(bp)
-        new_bp.id = str(uuid.uuid4())
         new_bp.name = new_name
         # Offset removed as per user request
         # new_bp.position.x += 10

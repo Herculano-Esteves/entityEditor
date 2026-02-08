@@ -29,8 +29,8 @@ class Selection(QObject):
             return
             
         super().__init__()
-        self._selected_ids: set[str] = set()
-        self._primary_id: Optional[str] = None
+        self._selected_parts: set[BodyPart] = set()
+        self._primary_part: Optional[BodyPart] = None
         
         self._selected_hitbox: Optional[Hitbox] = None
         self._signal_hub = get_signal_hub()
@@ -52,7 +52,8 @@ class Selection(QObject):
         
         # Preserve order from entity list (stable sort) or selection order? 
         # Usually standard is: Return selected items in render order (entity list order)
-        return [bp for bp in entity.body_parts if bp.id in self._selected_ids]
+        # Filter entity.body_parts to only include those in self._selected_parts
+        return [bp for bp in entity.body_parts if bp in self._selected_parts]
         
     @property
     def selected_body_parts(self) -> List[BodyPart]:
@@ -61,11 +62,7 @@ class Selection(QObject):
 
     @property
     def primary_bodypart(self) -> Optional[BodyPart]:
-        if not self._primary_id: return None
-        from src.tools.entity_editor.core.state.editor_state import EditorState
-        entity = EditorState().current_entity
-        if not entity: return None
-        return next((bp for bp in entity.body_parts if bp.id == self._primary_id), None)
+        return self._primary_part
         
     @property
     def selected_body_part(self) -> Optional[BodyPart]:
@@ -79,11 +76,11 @@ class Selection(QObject):
     @property
     def has_selection(self) -> bool:
         """Return True if any body part is selected."""
-        return len(self._selected_ids) > 0
+        return len(self._selected_parts) > 0
 
     def is_selected(self, bodypart: BodyPart) -> bool:
         """Check if a body part is selected."""
-        return bodypart.id in self._selected_ids
+        return bodypart in self._selected_parts
 
     def is_hitbox_selected(self, hitbox: Hitbox) -> bool:
         """Check if a hitbox is selected."""
@@ -99,17 +96,17 @@ class Selection(QObject):
             return
             
         if additive:
-            if bodypart.id in self._selected_ids:
-                self._selected_ids.remove(bodypart.id)
-                if self._primary_id == bodypart.id:
+            if bodypart in self._selected_parts:
+                self._selected_parts.remove(bodypart)
+                if self._primary_part == bodypart:
                     # Pick new primary?
-                    self._primary_id = next(iter(self._selected_ids)) if self._selected_ids else None
+                    self._primary_part = next(iter(self._selected_parts)) if self._selected_parts else None
             else:
-                self._selected_ids.add(bodypart.id)
-                self._primary_id = bodypart.id
+                self._selected_parts.add(bodypart)
+                self._primary_part = bodypart
         else:
-            self._selected_ids = {bodypart.id}
-            self._primary_id = bodypart.id
+            self._selected_parts = {bodypart}
+            self._primary_part = bodypart
             self._selected_hitbox = None 
             
         self._notify()
@@ -120,10 +117,10 @@ class Selection(QObject):
 
     def add_to_selection(self, bodypart: BodyPart):
         """Add to selection. Alias for select_bodypart(bp, True)."""
-        if bodypart.id not in self._selected_ids:
-            self._selected_ids.add(bodypart.id)
-            if not self._primary_id:
-                self._primary_id = bodypart.id
+        if bodypart not in self._selected_parts:
+            self._selected_parts.add(bodypart)
+            if not self._primary_part:
+                self._primary_part = bodypart
             self._notify()
 
     def toggle_selection(self, bodypart: BodyPart):
@@ -132,8 +129,8 @@ class Selection(QObject):
 
     def select_bodyparts(self, bodyparts: List[BodyPart]):
         """Select a list of body parts."""
-        self._selected_ids = {bp.id for bp in bodyparts}
-        self._primary_id = bodyparts[0].id if bodyparts else None
+        self._selected_parts = set(bodyparts)
+        self._primary_part = bodyparts[0] if bodyparts else None
         self._selected_hitbox = None
         self._notify()
         
@@ -149,8 +146,8 @@ class Selection(QObject):
         
     def clear_selection(self):
         """Clear all selection."""
-        self._selected_ids.clear()
-        self._primary_id = None
+        self._selected_parts.clear()
+        self._primary_part = None
         self._selected_hitbox = None
         self._notify()
         self._signal_hub.notify_hitbox_selected(None)

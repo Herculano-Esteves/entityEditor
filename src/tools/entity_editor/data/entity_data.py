@@ -12,7 +12,6 @@ This module defines the fundamental data structures used throughout the editor:
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Dict, Any
 from enum import Enum, IntEnum
-import uuid
 
 class BodyPartType(IntEnum):
     SIMPLE = 0
@@ -136,7 +135,7 @@ class Hitbox:
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization (ensures integers)."""
-        return {
+        data = {
             "name": self.name,
             "x": int(self.x),
             "y": int(self.y),
@@ -144,9 +143,11 @@ class Hitbox:
             "height": int(self.height),
             "hitbox_type": self.hitbox_type,
             "shape": int(self.shape),
-            "radius": int(self.radius),
-            "enabled": self.enabled
+            "radius": int(self.radius)
         }
+        if not self.enabled:
+            data["enabled"] = self.enabled
+        return data
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Hitbox':
@@ -192,7 +193,6 @@ class BodyPart:
     Contains visual representation (texture + UV) and associated hitboxes.
     """
     name: str = "BodyPart"
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
     position: Vec2 = field(default_factory=Vec2)
     size: Vec2 = field(default_factory=lambda: Vec2(64.0, 64.0))
     texture_id: str = "ERROR"  # Reference to TextureRegistry ID
@@ -229,29 +229,45 @@ class BodyPart:
     part_type: BodyPartType = BodyPartType.SIMPLE
     entity_ref: str = "" # Name or ID of the referenced entity definition (if part_type == ENTITY_REF)
     
+    
+    def __eq__(self, other):
+        """Identity equality: Checks if this is the exact same object instance."""
+        return self is other
+
+    def __hash__(self):
+        """Hash based on object identity for storage in sets/dicts."""
+        return id(self)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
-        return {
+        data = {
             "name": self.name,
-            "id": self.id,
             "position": self.position.to_dict(),
-            "size": self.size.to_dict(),
-            "texture_id": self.texture_id,
-            "uv_rect": self.uv_rect.to_dict(),
+            "rotation": self.rotation,
+            "z_order": self.z_order,
             "flip_x": self.flip_x,
             "flip_y": self.flip_y,
             "hitboxes": [hb.to_dict() for hb in self.hitboxes],
-            "uv_tile_id": self.uv_tile_id,
-            "pixel_scale": self.pixel_scale,
-            "rotation": self.rotation,
-            "z_order": self.z_order,
-            "visible": self.visible,
-            "part_type": int(self.part_type),
-            "entity_ref": self.entity_ref,
-            "entity_ref": self.entity_ref,
-            "pivot_offset": self.pivot_offset.to_dict(),
-            "pivot": self.pivot.to_dict()
+            "part_type": int(self.part_type)
         }
+        
+        if self.part_type == BodyPartType.ENTITY_REF:
+            # Reference-specific fields
+            data["entity_ref"] = self.entity_ref
+            data["pivot_offset"] = self.pivot_offset.to_dict()
+            # Size might be needed for selection/bounds? 
+            # User didn't explicitly ask to remove size, but texture/uv are removed.
+            data["size"] = self.size.to_dict()
+        else:
+            # Sprite-specific fields
+            data["size"] = self.size.to_dict()
+            data["texture_id"] = self.texture_id
+            data["uv_rect"] = self.uv_rect.to_dict()
+            data["pixel_scale"] = self.pixel_scale
+            # Reset pivot to default if it matches center? Can optimize later.
+            data["pivot"] = self.pivot.to_dict()
+
+        return data
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'BodyPart':
@@ -280,21 +296,34 @@ class BodyPart:
         else:
             pivot = Vec2(size.x / 2, size.y / 2)
 
+        # Determine type based on fields
+        is_ref = "entity_ref" in data
+        pt = BodyPartType.ENTITY_REF if is_ref else BodyPartType.SIMPLE
+        
+        # Helper for size (defaults to 64x64)
+        size = Vec2.from_dict(data.get("size", {"x": 64.0, "y": 64.0}))
+        
+        # Helper for pivot
+        if "pivot" in data:
+            pivot = Vec2.from_dict(data["pivot"])
+        else:
+            # Default center
+            pivot = Vec2(size.x / 2, size.y / 2)
+
         return cls(
             name=data.get("name", "BodyPart"),
-            id=data.get("id", str(uuid.uuid4())),
             position=Vec2.from_dict(data.get("position", {})),
             size=size,
-            texture_id=tid,
+            texture_id=data.get("texture_id", "ERROR"),
             uv_rect=UVRect.from_dict(data.get("uv_rect", {})),
             flip_x=data.get("flip_x", False),
             flip_y=data.get("flip_y", False),
             hitboxes=[Hitbox.from_dict(hb) for hb in data.get("hitboxes", [])],
-            uv_tile_id=data.get("uv_tile_id"),
+            uv_tile_id=None, # Removed feature
             pixel_scale=data.get("pixel_scale", 1),
             rotation=data.get("rotation", 0.0),
             z_order=data.get("z_order", 0),
-            visible=data.get("visible", True),
+            visible=True, # Always visible
             part_type=pt,
             entity_ref=data.get("entity_ref", ""),
             pivot_offset=Vec2.from_dict(data.get("pivot_offset", {})),
@@ -309,7 +338,7 @@ class Entity:
     Contains metadata, body parts, and optional entity-level hitboxes.
     """
     name: str = "NewEntity"
-    entity_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    entity_id: str = "NewEntity"
     pivot: Vec2 = field(default_factory=Vec2)  # Entity center/pivot point
     body_parts: List[BodyPart] = field(default_factory=list)
     entity_hitboxes: List[Hitbox] = field(default_factory=list)  # Entity-level hitboxes
@@ -321,11 +350,21 @@ class Entity:
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
+        # Split body parts
+        sprites = []
+        references = []
+        
+        for bp in self.body_parts:
+            if bp.part_type == BodyPartType.ENTITY_REF:
+                references.append(bp.to_dict())
+            else:
+                sprites.append(bp.to_dict())
+
         return {
             "name": self.name,
-            "entity_id": self.entity_id,
             "pivot": self.pivot.to_dict(),
-            "body_parts": [bp.to_dict() for bp in self.body_parts],
+            "sprites": sprites,
+            "references": references,
             "entity_hitboxes": [hb.to_dict() for hb in self.entity_hitboxes],
             "version": self.version,
             "tags": self.tags,
@@ -335,11 +374,24 @@ class Entity:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Entity':
         """Create from dictionary."""
+
+        # Combine sprites and references
+        sprites = [BodyPart.from_dict(bp) for bp in data.get("sprites", [])]
+        references = [BodyPart.from_dict(bp) for bp in data.get("references", [])]
+        
+        # Legacy support: check "body_parts" if others missing
+        if not sprites and not references and "body_parts" in data:
+             all_parts = [BodyPart.from_dict(bp) for bp in data.get("body_parts", [])]
+             # No need to split here, just assign
+             body_parts = all_parts
+        else:
+             body_parts = sprites + references
+
         return cls(
             name=data.get("name", "NewEntity"),
-            entity_id=data.get("entity_id", str(uuid.uuid4())),
+            entity_id=data.get("entity_id", "NewEntity"),
             pivot=Vec2.from_dict(data.get("pivot", {})),
-            body_parts=[BodyPart.from_dict(bp) for bp in data.get("body_parts", [])],
+            body_parts=body_parts,
             entity_hitboxes=[Hitbox.from_dict(hb) for hb in data.get("entity_hitboxes", [])],
             version=data.get("version", "1.0"),
             tags=data.get("tags", []),

@@ -82,6 +82,50 @@ class RemoveBodyPartCommand(Command):
         return f"Remove {self.bodypart.name}"
 
 
+class RemoveBodyPartsCommand(Command):
+    """Command to remove multiple body parts from the entity."""
+    
+    def __init__(self, bodyparts: list[BodyPart]):
+        self.bodyparts = list(bodyparts) # Copy list
+        self.removed_data = [] # List of (index, bodypart)
+    
+    def execute(self, entity, signal_hub=None):
+        """Remove the body parts from the entity."""
+        self.removed_data = []
+        
+        # We must process removals carefully.
+        # If we remove items, indices shift.
+        # But for correct undo, we want to record the index at the moment of removal.
+        # So sequential removal is fine, provided we store the index at that moment.
+        # AND provided we re-insert in reverse order.
+        
+        # Iterate over a copy or the original list? 
+        # Self.bodyparts is fixed.
+        
+        for bp in self.bodyparts:
+            try:
+                if bp in entity.body_parts:
+                    idx = entity.body_parts.index(bp)
+                    self.removed_data.append((idx, bp))
+                    entity.remove_body_part(bp)
+                    if signal_hub:
+                        signal_hub.notify_bodypart_removed(bp)
+            except ValueError:
+                continue
+
+    def undo(self, entity, signal_hub=None):
+        """Re-add the body parts."""
+        # Process in reverse order of removal to restore indices correctly
+        for idx, bp in reversed(self.removed_data):
+            entity.body_parts.insert(idx, bp)
+            if signal_hub:
+                signal_hub.notify_bodypart_added(bp)
+    
+    def get_description(self) -> str:
+        return f"Remove {len(self.bodyparts)} body parts"
+
+
+
 class ModifyBodyPartCommand(Command):
     """Command to modify body part properties."""
     

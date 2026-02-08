@@ -216,18 +216,13 @@ class ViewportRenderer:
         for bp in entity.body_parts:
             if not bp.visible: continue
             
-            # Logic from ViewportWidget: "Only draw hitboxes if this is the selected body part, or no body part is selected"
-            # We can replicate this behavior or show all.
-            has_selection = self._state.selection.has_selection
-            is_selected = self._state.selection.is_selected(bp)
-            
-            if not has_selection or is_selected:
-                painter.save()
-                self._apply_bodypart_transform(painter, bp)
-                for hitbox in bp.hitboxes:
-                    # Pass 0,0 offset because transform handles position
-                    self._draw_single_hitbox(painter, hitbox, Vec2(0, 0))
-                painter.restore()
+            # Always draw hitboxes in edit mode, regardless of selection
+            painter.save()
+            self._apply_bodypart_transform(painter, bp)
+            for hitbox in bp.hitboxes:
+                # Pass bp.position offset so hitboxes move with the body part
+                self._draw_single_hitbox(painter, hitbox, bp.position)
+            painter.restore()
                     
         # Draw Entity Hitboxes
         if hasattr(entity, 'entity_hitboxes'):
@@ -286,7 +281,7 @@ class ViewportRenderer:
             self._draw_resize_handles(painter, rect)
 
     def _draw_resize_handles(self, painter: QPainter, rect: QRect):
-        handle_size = 10 / self.zoom
+        handle_size = 7 / self.zoom
         painter.setBrush(QColor(255, 255, 100))
         painter.setPen(QPen(QColor(100, 100, 100), 1 / self.zoom))
         

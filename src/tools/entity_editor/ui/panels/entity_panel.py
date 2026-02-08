@@ -40,8 +40,7 @@ class EntityPanel(QWidget):
         self._name_edit.textChanged.connect(self._on_name_changed)
         metadata_layout.addRow("Name:", self._name_edit)
         
-        self._id_label = QLabel("N/A")
-        metadata_layout.addRow("ID:", self._id_label)
+
         
         metadata_group.setLayout(metadata_layout)
         layout.addWidget(metadata_group)
@@ -78,7 +77,6 @@ class EntityPanel(QWidget):
         """Update UI from entity data."""
         if not self._entity:
             self._name_edit.setText("")
-            self._id_label.setText("N/A")
             self._pivot_x_spin.setValue(0)
             self._pivot_y_spin.setValue(0)
             return
@@ -89,7 +87,6 @@ class EntityPanel(QWidget):
         self._pivot_y_spin.blockSignals(True)
         
         self._name_edit.setText(self._entity.name)
-        self._id_label.setText(self._entity.entity_id)
         self._pivot_x_spin.setValue(self._entity.pivot.x)
         self._pivot_y_spin.setValue(self._entity.pivot.y)
         

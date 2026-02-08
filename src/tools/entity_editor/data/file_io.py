@@ -34,8 +34,9 @@ class EntitySerializer:
         Raises:
             IOError: If file cannot be written
         """
-        # Update entity version
+        # Update entity version and ID
         entity.version = "2.0"
+        entity.entity_id = Path(filepath).stem
         
         # Convert entity to JSON
         entity_dict = entity.to_dict()
@@ -117,7 +118,11 @@ class EntityDeserializer:
             # Parse JSON and create Entity
             json_str = json_bytes.decode('utf-8')
             entity_dict = json.loads(json_str)
-            return Entity.from_dict(entity_dict)
+            entity = Entity.from_dict(entity_dict)
+            
+            # ID is the filename
+            entity.entity_id = Path(filepath).stem
+            return entity
     
     @staticmethod
     def load_json_debug(filepath: str) -> Optional[Entity]:
@@ -132,7 +137,9 @@ class EntityDeserializer:
         """
         with open(filepath, 'r', encoding='utf-8') as f:
             entity_dict = json.load(f)
-            return Entity.from_dict(entity_dict)
+            entity = Entity.from_dict(entity_dict)
+            entity.entity_id = Path(filepath).stem
+            return entity
 
 
 def validate_file(filepath: str) -> bool:
