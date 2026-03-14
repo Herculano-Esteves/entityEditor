@@ -13,9 +13,7 @@ from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Dict, Any
 from enum import Enum, IntEnum
 
-class BodyPartType(IntEnum):
-    SIMPLE = 0
-    ENTITY_REF = 1
+
 
 class HitboxShape(IntEnum):
     RECTANGLE = 0

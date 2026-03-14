@@ -121,24 +121,18 @@ class SelectTool(AbstractTool):
         if event.button() == Qt.LeftButton:
             # Commit Hitbox Change
             if self._dragging_hitbox:
-                if self._state.history:
-                    self._state.history.end_change()
                 self._dragging_hitbox = None
                 self._resize_edge = None
-                
+
             if self._dragging:
-                if self._state.history:
-                    # Check if actually moved to avoid empty undo entries?
-                    # The service might handle this, or we check here.
-                    self._state.history.end_change()
                 self._dragging = False
                 self._drag_start_positions.clear()
-            
+
             # Commit Box Selection
             if self._is_box_selecting:
                 self._handle_box_selection(event.modifiers())
                 self._is_box_selecting = False
-        
+
         self._reset_cursor()
 
     def render(self, painter: QPainter):
@@ -268,8 +262,7 @@ class SelectTool(AbstractTool):
         self._drag_start_hitbox_size = Vec2(hitbox.width, hitbox.height)
         
         action_name = "Resize Hitbox" if edge else "Move Hitbox"
-        if self._state.history:
-            self._state.history.begin_change(action_name)
+        _ = action_name  # action logged but not used without undo
 
     def _handle_bodypart_press(self, clicked_bp, modifiers, world_pos: Vec2):
         # Handle Selection
@@ -286,9 +279,6 @@ class SelectTool(AbstractTool):
             self._drag_start_positions = {}
             for bp in self._state.selection.selected_body_parts:
                 self._drag_start_positions[id(bp)] = Vec2(bp.position.x, bp.position.y)
-            
-            if self._state.history:
-                self._state.history.begin_change("Move Body Part")
 
     def _handle_hitbox_drag(self, world_pos: Vec2):
         # Calculate Delta in Local Space (if rotated)

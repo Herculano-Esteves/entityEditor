@@ -4,30 +4,27 @@ Body Parts Panel for Entity Editor.
 Panel for managing and editing body parts.
 """
 
+import os
+import copy
+import logging
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QGroupBox, QFormLayout, QLineEdit, QPushButton, QSpinBox,
-    QLabel, QFileDialog, QCheckBox, QDoubleSpinBox, QComboBox
+    QLabel, QCheckBox, QComboBox,
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QIcon
-import sys
-import os
-import copy
-import re
-
-
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.tools.entity_editor.data.entity_data import Entity, BodyPart, Vec2, UVRect, BodyPartType
 from src.tools.entity_editor.core.entity_manager import get_entity_manager
 from src.tools.entity_editor.core.geometry_utils import calculate_entity_bounds
-from src.tools.entity_editor.core import get_signal_hub, AddBodyPartCommand, RemoveBodyPartCommand, RemoveBodyPartsCommand, MoveBodyPartCommand, ModifyBodyPartCommand
+from src.tools.entity_editor.core import get_signal_hub
 from src.tools.entity_editor.core.state.editor_state import EditorState
 from src.tools.entity_editor.rendering import get_texture_manager
 from src.tools.entity_editor.ui.dialogs.uv_editor_dialog import UVEditorDialog
-from src.tools.entity_editor.core.naming_utils import generate_unique_name, ensure_unique_name
+from src.tools.entity_editor.core.naming_utils import generate_unique_name
+
+logger = logging.getLogger(__name__)
 
 class BodyPartsPanel(QWidget):
     """Panel for managing body parts."""
@@ -35,22 +32,17 @@ class BodyPartsPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         
-        # State
         self._state = EditorState()
         self._texture_manager = get_texture_manager()
-        
-        # State tracking for undo
-        self._parameter_change_start_value = None
         self._updating_ui = False
-        
-        # Isolation State
-        self._isolating_bp = None # The body part currently isolated
-        self._isolation_snapshot = {} # Map[bp_id, bool] - visibility state before isolation
-        
+
+        # Isolation state
+        self._isolating_bp = None
+        self._isolation_snapshot: dict = {}
+
         self._setup_ui()
         self._connect_signals()
-        
-        # Initial Refresh
+
         self._refresh_list()
         self._update_properties()
     
@@ -234,21 +226,18 @@ class BodyPartsPanel(QWidget):
         
         self._update_properties_enabled()
 
-    def _connect_signals(self):
-        # Listen to State
+    def _connect_signals(self) -> None:
         if hasattr(self._state.selection, "selection_changed"):
-             self._state.selection.selection_changed.connect(self._on_state_selection_changed)
-        
-        # SignalHub (for legacy or broader events)
-        signal_hub = get_signal_hub()
-        signal_hub.entity_loaded.connect(self._on_entity_loaded)
-        signal_hub.bodypart_added.connect(lambda _: self._refresh_list())
-        signal_hub.bodypart_removed.connect(lambda _: self._refresh_list())
-        signal_hub.bodypart_removed.connect(lambda _: self._refresh_list())
-        signal_hub.bodypart_reordered.connect(self._refresh_list)
-        signal_hub.bodypart_modified.connect(self._on_bodypart_modified)
-        signal_hub.referenced_entity_saved.connect(self._on_referenced_entity_saved)
-        signal_hub.entity_saved.connect(self._on_global_entity_saved)
+            self._state.selection.selection_changed.connect(self._on_state_selection_changed)
+
+        hub = get_signal_hub()
+        hub.entity_loaded.connect(self._on_entity_loaded)
+        hub.bodypart_added.connect(lambda _: self._refresh_list())
+        hub.bodypart_removed.connect(lambda _: self._refresh_list())
+        hub.bodypart_reordered.connect(self._refresh_list)
+        hub.bodypart_modified.connect(self._on_bodypart_modified)
+        hub.referenced_entity_saved.connect(self._on_referenced_entity_saved)
+        hub.entity_saved.connect(self._on_global_entity_saved)
             
     def _on_entity_loaded(self, entity):
         self._refresh_list()
@@ -282,7 +271,7 @@ class BodyPartsPanel(QWidget):
                     count += 1
                     
         if count > 0:
-            print(f"Updated {count} references to {name}")
+            logger.debug("Updated %d reference(s) to '%s'", count, name)
             get_signal_hub().notify_entity_modified()
             self._update_properties()
 
@@ -295,10 +284,7 @@ class BodyPartsPanel(QWidget):
                     changed = True
         
         if changed:
-            print("Auto-updated stale entity references on load.")
-            # We don't necessarily want to mark as modified immediately on load?
-            # User request: "only new imports come with correct area" -> implies they want current file to match.
-            # If we mark modified, user knows something changed.
+            logger.debug("Auto-updated stale entity references on load.")
             get_signal_hub().notify_entity_modified()
 
     def _update_ref_geometry(self, bp) -> bool:
@@ -573,13 +559,13 @@ class BodyPartsPanel(QWidget):
         self._updating_ui = False
         self._update_properties_enabled()
 
-    def _update_properties_enabled(self):
+    def _update_properties_enabled(self) -> None:
         has_selection = self._state.selection.has_selection
+        entity_exists = self._state.current_entity is not None
         self._remove_btn.setEnabled(has_selection)
         self._rename_btn.setEnabled(has_selection)
         self._duplicate_btn.setEnabled(has_selection)
-        self._Entity_exists = (self._state.current_entity is not None)
-        self._add_btn.setEnabled(self._Entity_exists)
+        self._add_btn.setEnabled(entity_exists)
 
     # --- Actions ---
 
@@ -627,78 +613,56 @@ class BodyPartsPanel(QWidget):
         get_signal_hub().notify_entity_modified() # Force full redraw?
         self._refresh_list()
 
-    def _on_add_bodypart(self):
-        if not self._state.current_entity: return
-        
+    def _on_add_bodypart(self) -> None:
+        if not self._state.current_entity:
+            return
         count = len(self._state.current_entity.body_parts)
-        # Default size is 64x64, so pivot should be 32x32 (Center)
-        size = Vec2(64,64)
+        size = Vec2(64, 64)
         center = Vec2(size.x / 2, size.y / 2)
-        bp = BodyPart(name=f"BodyPart_{count}", position=Vec2(0,0), size=size, pivot=center)
-        
-        if self._state.history:
-            self._state.history.execute(AddBodyPartCommand(bp))
-        else:
-            self._state.current_entity.add_body_part(bp) # Fallback
-            get_signal_hub().notify_bodypart_added(bp)
+        bp = BodyPart(name=f"BodyPart_{count}", position=Vec2(0, 0), size=size, pivot=center)
+        self._state.current_entity.add_body_part(bp)
+        get_signal_hub().notify_bodypart_added(bp)
+        get_signal_hub().notify_entity_modified()
+        logger.debug("Added body part '%s'", bp.name)
 
-    def _on_remove_bodypart(self):
-        # Update: Handle multiple selection
+    def _on_remove_bodypart(self) -> None:
         selected_items = self._bodyparts_list.selectedItems()
-        if not selected_items: return
-        
+        if not selected_items:
+            return
         selected_bps = [item.data(Qt.UserRole) for item in selected_items]
-        if not selected_bps: return
-        
-        if self._state.history:
-            # Use batch command for atomic removal
-            self._state.history.execute(RemoveBodyPartsCommand(selected_bps))
-            # Selection clearing is handled by signal updates usually, but we can force clear if needed.
-            # But let the signal hub do its job.
-        else:
-            # Fallback (manual loop, though history should always be there)
-            for bp in selected_bps:
-                if bp in self._state.current_entity.body_parts:
-                    self._state.current_entity.remove_body_part(bp)
-                    get_signal_hub().notify_bodypart_removed(bp)
+        if not selected_bps or not self._state.current_entity:
+            return
+        for bp in selected_bps:
+            if bp in self._state.current_entity.body_parts:
+                self._state.current_entity.remove_body_part(bp)
+                get_signal_hub().notify_bodypart_removed(bp)
+                logger.debug("Removed body part '%s'", bp.name)
+        self._state.selection.clear_selection()
+        get_signal_hub().notify_entity_modified()
 
-    def _on_duplicate_bodypart(self):
+    def _on_duplicate_bodypart(self) -> None:
         bp = self._state.selection.selected_body_part
-        if not bp: return
-        
+        if not bp:
+            return
         existing_names = {b.name for b in self._state.current_entity.body_parts}
-        new_name = generate_unique_name(bp.name, existing_names)
-        
         new_bp = copy.deepcopy(bp)
-        new_bp.name = new_name
-        # Offset removed as per user request
-        # new_bp.position.x += 10
-        # new_bp.position.y += 10
-        
-        # Find index to insert after
+        new_bp.name = generate_unique_name(bp.name, existing_names)
         try:
-            current_index = self._state.current_entity.body_parts.index(bp)
-            insert_index = current_index + 1
+            insert_index = self._state.current_entity.body_parts.index(bp) + 1
+            self._state.current_entity.body_parts.insert(insert_index, new_bp)
+            get_signal_hub().notify_bodypart_reordered()
         except ValueError:
-            insert_index = -1
-        
-        if self._state.history:
-            self._state.history.execute(AddBodyPartCommand(new_bp, insert_index))
-        else:
-            if insert_index >= 0:
-                self._state.current_entity.body_parts.insert(insert_index, new_bp)
-                get_signal_hub().notify_bodypart_added(new_bp)
-                get_signal_hub().notify_bodypart_reordered()
-            else:
-                self._state.current_entity.add_body_part(new_bp)
-                get_signal_hub().notify_bodypart_added(new_bp)
+            self._state.current_entity.add_body_part(new_bp)
+        get_signal_hub().notify_bodypart_added(new_bp)
+        get_signal_hub().notify_entity_modified()
+        logger.debug("Duplicated body part '%s' -> '%s'", bp.name, new_bp.name)
 
 
     def _on_rename_bodypart(self):
         self._name_edit.setFocus()
         self._name_edit.selectAll()
 
-    # --- Property Editing (With Undo Support) ---
+    # --- Property Editing ---
 
     def _on_property_changing(self, prop_name, value):
         """Called when spinbox values change."""
@@ -737,103 +701,35 @@ class BodyPartsPanel(QWidget):
             self._size_y_spin.setValue(int(bp.size.y))
             self._updating_ui = False
 
-    def _on_property_changed_finished(self):
-        """Called when editing finishes (e.g. lost focus)."""
+    def _on_property_changed_finished(self) -> None:
+        """Called when spinbox editing finishes. Auto-resets pivot on size change."""
         bp = self._state.selection.selected_body_part
-        if not bp: return
-        
+        if not bp:
+            return
         sender = self.sender()
-        prop = None
-        new_val = None
-        
-        # Identify property
-        if sender == self._pos_x_spin: prop, new_val = 'x', self._pos_x_spin.value()
-        elif sender == self._pos_y_spin: prop, new_val = 'y', self._pos_y_spin.value()
-        elif sender == self._size_x_spin: prop, new_val = 'size_x', self._size_x_spin.value()
-        elif sender == self._size_y_spin: prop, new_val = 'size_y', self._size_y_spin.value()
-        elif sender == self._scale_spin: prop, new_val = 'scale', self._scale_spin.value()
-        elif sender == self._rot_spin: prop, new_val = 'rot', self._rot_spin.value()
-        elif sender == self._z_spin: prop, new_val = 'z', self._z_spin.value()
-        elif sender == self._pivot_x_spin: prop, new_val = 'pivot_x', self._pivot_x_spin.value()
-        elif sender == self._pivot_y_spin: prop, new_val = 'pivot_y', self._pivot_y_spin.value()
-        
-        if prop and self._parameter_change_start_value is not None:
-             # Check if actually changed
-             if self._parameter_change_start_value == new_val:
-                 return
-                 
-             # Create Command
-             key_map = {
-                 'x': 'position', 'y': 'position',
-                 'size_x': 'size', 'size_y': 'size',
-                 'scale': 'pixel_scale',
-                 'rot': 'rotation',
-                 'z': 'z_order',
-                 'pivot_x': 'pivot', 'pivot_y': 'pivot'
-             }
-             
-             key = key_map.get(prop)
-             old_state = {}
-             new_state = {}
-             
-             if key == 'position':
-                 old_state[key] = copy.deepcopy(bp.position)
-                 old_vec = Vec2(bp.position.x, bp.position.y)
-                 if prop == 'x': old_vec.x = self._parameter_change_start_value
-                 else: old_vec.y = self._parameter_change_start_value
-                 old_state[key] = old_vec
-                 new_state[key] = copy.deepcopy(bp.position)
-                 
-             elif key == 'size':
-                 old_vec = Vec2(bp.size.x, bp.size.y)
-                 if prop == 'size_x': old_vec.x = self._parameter_change_start_value
-                 else: old_vec.y = self._parameter_change_start_value
-                 old_state[key] = old_vec
-                 new_state[key] = copy.deepcopy(bp.size)
-                 
-                 # AUTO-RESET PIVOT ON MANUAL RESIZE
-                 # "Always be set to center every time it changes size"
-                 new_pivot = Vec2(bp.size.x / 2, bp.size.y / 2)
-                 old_state['pivot'] = copy.deepcopy(bp.pivot)
-                 new_state['pivot'] = new_pivot
-                 # Apply locally
-                 bp.pivot.x = new_pivot.x
-                 bp.pivot.y = new_pivot.y
-                 self._pivot_x_spin.blockSignals(True)
-                 self._pivot_x_spin.setValue(int(new_pivot.x))
-                 self._pivot_y_spin.setValue(int(new_pivot.y))
-                 self._pivot_x_spin.blockSignals(False)
+        if sender in (self._size_x_spin, self._size_y_spin):
+            # Auto-reset pivot to center when size changes manually
+            new_pivot = Vec2(bp.size.x / 2, bp.size.y / 2)
+            bp.pivot.x = new_pivot.x
+            bp.pivot.y = new_pivot.y
+            self._pivot_x_spin.blockSignals(True)
+            self._pivot_x_spin.setValue(int(new_pivot.x))
+            self._pivot_y_spin.setValue(int(new_pivot.y))
+            self._pivot_x_spin.blockSignals(False)
+        get_signal_hub().notify_bodypart_modified(bp)
+        get_signal_hub().notify_entity_modified()
 
-             elif key == 'pivot':
-                 old_vec = Vec2(bp.pivot.x, bp.pivot.y)
-                 if prop == 'pivot_x': old_vec.x = self._parameter_change_start_value
-                 else: old_vec.y = self._parameter_change_start_value
-                 old_state[key] = old_vec
-                 new_state[key] = copy.deepcopy(bp.pivot)
-
-             else:
-                 old_state[key] = self._parameter_change_start_value
-                 new_state[key] = new_val
-                 
-             if self._state.history:
-                 self._state.history.execute(ModifyBodyPartCommand(bp, old_state, new_state))
-                 
-             self._parameter_change_start_value = None
-
-    def _on_name_changed(self):
+    def _on_name_changed(self) -> None:
         bp = self._state.selection.selected_body_part
         if bp and bp.name != self._name_edit.text():
             new_name = self._name_edit.text()
-            
             existing_names = {b.name for b in self._state.current_entity.body_parts if b != bp}
-            unique_name = ensure_unique_name(new_name, existing_names)
-            
+            unique_name = generate_unique_name(new_name, existing_names)
             if unique_name != new_name:
-                # Update UI to show enforced name
                 self._name_edit.setText(unique_name)
-            
             bp.name = unique_name
-            get_signal_hub().notify_bodypart_modified(bp) 
+            get_signal_hub().notify_bodypart_modified(bp)
+            get_signal_hub().notify_entity_modified()
             self._refresh_list()
 
     def _on_flip_changed(self):
@@ -856,13 +752,10 @@ class BodyPartsPanel(QWidget):
         old_state = {'part_type': bp.part_type}
         new_state = {'part_type': new_type}
         
-        if self._state.history:
-            self._state.history.execute(ModifyBodyPartCommand(bp, old_state, new_state))
-        else:
-             bp.part_type = new_type
-             get_signal_hub().notify_bodypart_modified(bp)
-             
-        self._update_properties() # To toggle visibility
+        bp.part_type = new_type
+        get_signal_hub().notify_bodypart_modified(bp)
+        get_signal_hub().notify_entity_modified()
+        self._update_properties()
         
     def _on_entity_ref_changed(self, index):
         if self._updating_ui: return
@@ -878,12 +771,10 @@ class BodyPartsPanel(QWidget):
         old_state = {'entity_ref': bp.entity_ref}
         new_state = {'entity_ref': ref_name}
         
-        if self._state.history:
-            self._state.history.execute(ModifyBodyPartCommand(bp, old_state, new_state))
-        else:
-             bp.entity_ref = ref_name
-             get_signal_hub().notify_bodypart_modified(bp)
-             
+        bp.entity_ref = ref_name
+        get_signal_hub().notify_bodypart_modified(bp)
+        get_signal_hub().notify_entity_modified()
+
         # Auto-Resize logic (Post-change)
         # If we just switched to a valid ref, update size to match
         if ref_name:
@@ -920,18 +811,15 @@ class BodyPartsPanel(QWidget):
                         'pivot_offset': Vec2(off_x, off_y)
                      }
                      
-                     if self._state.history:
-                         self._state.history.execute(ModifyBodyPartCommand(bp, old_props, new_props))
-                     else:
-                         bp.position.x = new_pos_x
-                         bp.position.y = new_pos_y
-                         bp.size.x = w
-                         bp.size.y = h
-                         bp.pivot_offset.x = off_x
-                         bp.pivot_offset.y = off_y
-                         get_signal_hub().notify_bodypart_modified(bp)
-
-                     self._update_properties() # Refresh UI spins
+                     bp.position.x = new_pos_x
+                     bp.position.y = new_pos_y
+                     bp.size.x = w
+                     bp.size.y = h
+                     bp.pivot_offset.x = off_x
+                     bp.pivot_offset.y = off_y
+                     get_signal_hub().notify_bodypart_modified(bp)
+                     get_signal_hub().notify_entity_modified()
+                     self._update_properties()
 
 
     def _on_texture_changed(self, index):
@@ -980,17 +868,18 @@ class BodyPartsPanel(QWidget):
             'position': Vec2(new_pos_x, new_pos_y)
         }
         
-        if self._state.history:
-            self._state.history.execute(ModifyBodyPartCommand(bp, old_state, new_state))
-        else:
-            bp.texture_id = tex_id
-            bp.uv_rect.x = 0.0; bp.uv_rect.y = 0.0
-            bp.uv_rect.width = 1.0; bp.uv_rect.height = 1.0
-            bp.size.x = w; bp.size.y = h
-            bp.pivot = new_pivot
-            bp.position.x = new_pos_x; bp.position.y = new_pos_y
-            get_signal_hub().notify_bodypart_modified(bp)
-            
+        bp.texture_id = tex_id
+        bp.uv_rect.x = 0.0
+        bp.uv_rect.y = 0.0
+        bp.uv_rect.width = 1.0
+        bp.uv_rect.height = 1.0
+        bp.size.x = w
+        bp.size.y = h
+        bp.pivot = new_pivot
+        bp.position.x = new_pos_x
+        bp.position.y = new_pos_y
+        get_signal_hub().notify_bodypart_modified(bp)
+        get_signal_hub().notify_entity_modified()
         self._update_properties()
 
     def _on_visual_uv_edit(self):

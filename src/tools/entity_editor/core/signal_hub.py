@@ -54,7 +54,7 @@ class SignalHub(QObject):
     snap_value_changed = Signal(float)           # Emitted when grid snap value changes
     
     # History signals
-    undo_redo_state_changed = Signal(bool, bool, str, str)  # (can_undo, can_redo, undo_desc, redo_desc)
+    # (Undo/redo removed)
     
     def __init__(self):
         super().__init__()
@@ -155,12 +155,6 @@ class SignalHub(QObject):
     def notify_viewport_selection_changed(self, selected_object):
         """Notify that viewport selection has changed."""
         self.viewport_selection_changed.emit(selected_object)
-    
-    def notify_undo_redo_state_changed(self, can_undo: bool, can_redo: bool, 
-                                       undo_desc: str = None, redo_desc: str = None):
-        """Notify that undo/redo state has changed."""
-        self.undo_redo_state_changed.emit(can_undo, can_redo, 
-                                         undo_desc or "", redo_desc or "")
 
 
 # Global signal hub instance

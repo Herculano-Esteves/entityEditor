@@ -2,14 +2,14 @@
 from src.tools.entity_editor.data.entity_data import Entity, BodyPart, Vec2, Hitbox, BodyPartType
 from src.tools.entity_editor.core.entity_manager import get_entity_manager
 
-def calculate_entity_bounds(entity: Entity) -> tuple[float, float]:
+def calculate_entity_bounds(entity: Entity) -> tuple[float, float, float, float]:
     """
-    Calculate the bounding box width and height of an entity.
-    This considers all visible body parts and recursively referenced entities.
-    Returns (width, height). Defaults to (64, 64) if empty.
+    Calculate the bounding box of an entity.
+    Considers all visible body parts and entity hitboxes.
+    Returns (min_x, min_y, width, height). Defaults to (0, 0, 64, 64) if empty.
     """
     if not entity.body_parts and not entity.entity_hitboxes:
-        return 64.0, 64.0
+        return 0.0, 0.0, 64.0, 64.0
         
     min_x = float('inf')
     min_y = float('inf')

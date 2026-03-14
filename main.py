@@ -6,9 +6,15 @@ A modular, extensible 2D entity editor and toolset for game development.
 
 import sys
 import os
+import logging
 
 # Ensure src is in path so we can import from src
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s %(name)s: %(message)s",
+)
 
 from PySide6.QtWidgets import QApplication
 from src.launcher import Launcher

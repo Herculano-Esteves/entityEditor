@@ -1,0 +1,9 @@
+{
+    "name": "entityEditor",
+    "assets_root": "assets",
+    "textures_path": "assets/textures",
+    "entities_path": "assets/entities",
+    "parts_path": "assets/parts",
+    "fonts_path": "assets/fonts",
+    "registry_path": "assets/registry/texture_registry.bin"
+}

@@ -1,4 +1,5 @@
 
+import logging
 import os
 from typing import Optional, Dict, Set
 from pathlib import Path
@@ -7,6 +8,8 @@ from src.tools.entity_editor.data.file_io import EntityDeserializer
 from src.common.game_project import GameProject
 
 from src.tools.entity_editor.core import get_signal_hub
+
+logger = logging.getLogger(__name__)
 
 class EntityManager:
     """
@@ -72,9 +75,9 @@ class EntityManager:
         filename = os.path.basename(filepath)
         
         if name not in self._name_to_path:
-             print(f"[EntityManager] Registering new entity: {name}")
-             self._name_to_path[name] = fs_path
-             self._name_to_path[filename] = fs_path
+            logger.debug("Registering new entity: %s", name)
+            self._name_to_path[name] = fs_path
+            self._name_to_path[filename] = fs_path
         
         # Check if in cache (need to normalize cache keys too potentially, but let's try direct first)
         keys_to_remove = []
@@ -83,7 +86,7 @@ class EntityManager:
                 keys_to_remove.append(cached_path)
                 
         for k in keys_to_remove:
-            print(f"[EntityManager] Invalidating cache for: {k}")
+            logger.debug("Invalidating cache for: %s", k)
             del self._cache[k]
             # Notify that this specific entity definition was updated
             get_signal_hub().notify_referenced_entity_saved(k)
@@ -110,7 +113,7 @@ class EntityManager:
             filepath = self._name_to_path.get(ref_name)
             
         if not filepath:
-            print(f"[EntityManager] Could not resolve entity reference: {ref_name}")
+            logger.warning("Could not resolve entity reference: '%s'", ref_name)
             return None
             
         # 2. Check Cache
@@ -124,7 +127,7 @@ class EntityManager:
                 self._cache[filepath] = entity
                 return entity
         except Exception as e:
-            print(f"[EntityManager] Failed to load referenced entity {filepath}: {e}")
+            logger.error("Failed to load referenced entity %s: %s", filepath, e)
             
         return None
         

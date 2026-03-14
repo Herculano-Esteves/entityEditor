@@ -9,10 +9,7 @@ from PySide6.QtWidgets import (QMainWindow, QDockWidget, QFileDialog, QMessageBo
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QAction, QKeySequence
 from pathlib import Path
-import sys
 import os
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.tools.entity_editor.data import Entity, EntitySerializer, EntityDeserializer
 from src.tools.entity_editor.core import get_signal_hub
@@ -69,12 +66,6 @@ class MainWindow(QMainWindow):
         self._setup_menus()
         self._setup_toolbar()
         self._setup_statusbar()
-        
-        # Initialize History via State (it does this internally but we want to hook up UI updates)
-        # We need to listen to history changes to update Undo/Redo buttons.
-        # HistoryService wraps HistoryManager. HistoryManager emits via SignalHub?
-        # Let's check: HistoryManager uses SignalHub.undo_redo_state_changed.
-        self._signal_hub.undo_redo_state_changed.connect(self._on_undo_redo_state_changed)
         
         # Create new entity by default
         self._new_entity()
@@ -152,23 +143,9 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
-        # Edit menu
-        edit_menu = menubar.addMenu("&Edit")
-        
-        self._undo_action = QAction("&Undo", self)
-        self._undo_action.setShortcut(self._input_manager.get_shortcut('undo'))
-        self._undo_action.setShortcutContext(Qt.ApplicationShortcut)
-        self._undo_action.triggered.connect(self._on_undo)
-        self._undo_action.setEnabled(False)
-        edit_menu.addAction(self._undo_action)
-        
-        self._redo_action = QAction("&Redo", self)
-        self._redo_action.setShortcut(self._input_manager.get_shortcut('redo'))
-        self._redo_action.setShortcutContext(Qt.ApplicationShortcut)
-        self._redo_action.triggered.connect(self._on_redo)
-        self._redo_action.setEnabled(False)
-        edit_menu.addAction(self._redo_action)
-        
+        # Edit menu (no undo/redo)
+        # edit_menu = menubar.addMenu("&Edit")
+
         # View menu
         view_menu = menubar.addMenu("&View")
         
@@ -319,7 +296,6 @@ class MainWindow(QMainWindow):
 
         try:
             EntitySerializer.save(entity, filepath)
-            EntitySerializer.save(entity, filepath)
             self._current_filepath = filepath
             self._state.set_current_filepath(filepath)
             self._is_modified = False
@@ -469,35 +445,6 @@ class MainWindow(QMainWindow):
     
     def _show_about(self):
         QMessageBox.about(self, "About Entity Editor", "Entity Editor v1.0\n\nA modular, extensible 2D entity editor.")
-    
-    def _on_undo(self):
-        if self._state.history.can_undo():
-            self._state.history.undo()
-            # Status update handled via signal
-    
-    def _on_redo(self):
-        if self._state.history.can_redo():
-            self._state.history.redo()
-            
-    def _on_undo_redo_state_changed(self, can_undo: bool, can_redo: bool, undo_desc: str, redo_desc: str):
-        self._undo_action.setEnabled(can_undo)
-        self._redo_action.setEnabled(can_redo)
-        
-        if undo_desc:
-            self._undo_action.setText(f"&Undo {undo_desc}")
-            self._statusbar.showMessage(f"Undo available: {undo_desc}", 2000)
-        else:
-            self._undo_action.setText("&Undo")
-        
-        if redo_desc:
-            self._redo_action.setText(f"&Redo {redo_desc}")
-        else:
-            self._redo_action.setText("&Redo")
-    
-    def get_history_manager(self) -> EditorState: # Changed return type to EditorState
-        """Get the history manager for use by panels."""
-        # Panels should now interact with EditorState directly or via its history service
-        return self._state
     
     def closeEvent(self, event):
         """Handle window close event."""

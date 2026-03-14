@@ -1,0 +1,10 @@
+{
+    "BOX": "textures/box.png",
+    "EMPTY": "textures/empty.png",
+    "ERROR": "textures/error.png",
+    "TEST": "textures/test.png",
+    "PLAYERBODY": "textures/player/PlayerBody.png",
+    "ARM": "textures/player/arm.png",
+    "HEAD": "textures/player/head.png",
+    "TORSO": "textures/player/torso.png"
+}
