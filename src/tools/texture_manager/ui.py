@@ -49,6 +49,13 @@ class TextureManagerWindow(QMainWindow):
 
         self._refresh_list()
 
+    def closeEvent(self, event) -> None:
+        """Called when the window is closed. Auto-save if there are unsaved changes."""
+        if self.registry.is_dirty:
+            self.registry.save()
+            logger.info("Texture Manager auto-saved changes on exit.")
+        super().closeEvent(event)
+
     # ------------------------------------------------------------------
     # UI setup
     # ------------------------------------------------------------------

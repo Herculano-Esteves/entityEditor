@@ -64,6 +64,7 @@ class TextureRegistry:
         self._project = project
         self._registry: dict[str, str] = {}   # {ID: relative_path}
         self._keys_order: list[str] = []       # insertion order
+        self.is_dirty: bool = False
 
         if project is not None:
             bin_abs = project.abs_registry_path
@@ -122,25 +123,25 @@ class TextureRegistry:
         return list(self._keys_order)
 
     # ------------------------------------------------------------------
-    # Public write API  (all mutating operations auto-save)
+    # Public write API  (mutations set is_dirty = True)
     # ------------------------------------------------------------------
 
     def add_texture(self, texture_id: str, relative_path: str) -> None:
-        """Add or update a texture entry, then save."""
+        """Add or update a texture entry."""
         if texture_id not in self._registry:
             self._keys_order.append(texture_id)
         self._registry[texture_id] = relative_path
-        self.save()
+        self.is_dirty = True
 
     def remove_texture(self, texture_id: str) -> None:
-        """Remove a texture entry, then save."""
+        """Remove a texture entry."""
         if texture_id in self._registry:
             del self._registry[texture_id]
             self._keys_order = [k for k in self._keys_order if k != texture_id]
-            self.save()
+            self.is_dirty = True
 
     def move_up(self, texture_id: str) -> None:
-        """Move an entry one position earlier in the list, then save."""
+        """Move an entry one position earlier in the list."""
         if texture_id not in self._keys_order:
             return
         idx = self._keys_order.index(texture_id)
@@ -149,10 +150,10 @@ class TextureRegistry:
                 self._keys_order[idx - 1],
                 self._keys_order[idx],
             )
-            self.save()
+            self.is_dirty = True
 
     def move_down(self, texture_id: str) -> None:
-        """Move an entry one position later in the list, then save."""
+        """Move an entry one position later in the list."""
         if texture_id not in self._keys_order:
             return
         idx = self._keys_order.index(texture_id)
@@ -161,7 +162,7 @@ class TextureRegistry:
                 self._keys_order[idx + 1],
                 self._keys_order[idx],
             )
-            self.save()
+            self.is_dirty = True
 
     # ------------------------------------------------------------------
     # Persistence
@@ -263,6 +264,7 @@ class TextureRegistry:
         try:
             self._save_json()
             self._export_binary()
+            self.is_dirty = False
             logger.info("Saved texture registry: %s", self._json_path)
             return True
         except Exception as e:

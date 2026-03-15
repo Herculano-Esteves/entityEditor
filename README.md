@@ -8,6 +8,10 @@ A modular 2D Entity Editor designed for creating complex character rigs and enti
 
 ## Features
 
+### Project Management
+- **Game Projects**: Manage assets using a centralized `.gameproj.json` configuration file.
+- **Texture Manager**: Automatically scan, register, and sync textures from your assets folder.
+
 ### Entity Management
 - **Create & Manage**: Easily create, load, and save entities using a robust `.entdef` format.
 - **Metadata**: Manage unique IDs, names, and tags for seamless engine integration.
@@ -56,6 +60,10 @@ A modular 2D Entity Editor designed for creating complex character rigs and enti
 
 ## Usage
 
+### Command Line Interfaces
+You can launch the editor with optional debugging flags:
+- `python main.py -wrlogs` — Enables a global interceptor that prints every real-time file read and write operation to the console (useful for tracking IO).
+
 ### Quick Start
 
 1. **Generate Examples** (Optional):
@@ -64,7 +72,11 @@ A modular 2D Entity Editor designed for creating complex character rigs and enti
 2. **Open the Editor**:
    Run `python main.py`.
 
-3. **Create a New Entity**:
+3. **Manage your Project**:
+   - The Launcher allows you to load an existing `.gameproj.json` or create a new one.
+   - Textures placed in your project's `textures` folder will auto-sync to the registry.
+
+4. **Create a New Entity**:
    - Go to `File → New Entity` (Ctrl+N).
    - Use the **Body Parts** panel to add visual components.
    - Use the **Hitbox** panel to add logic zones.

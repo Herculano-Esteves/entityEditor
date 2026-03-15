@@ -615,40 +615,47 @@ def test_registry_no_hardcoded_game_entries(tmp_path):
 
 
 def test_registry_add_texture(tmp_path):
-    """add_texture() inserts the key and persists to disk."""
+    """add_texture() inserts the key and sets is_dirty to True."""
     project = _write_registry(tmp_path, {})
     reg = TextureRegistry(project)
     reg.add_texture("HERO", "textures/hero.png")
+    assert reg.is_dirty is True
     assert reg.get_path("HERO") == "textures/hero.png"
-    # Reload from disk to verify persistence
+    
+    # Save explicitly and reload from disk to verify persistence
+    reg.save()
+    assert reg.is_dirty is False
     reg2 = TextureRegistry(project)
     assert reg2.get_path("HERO") == "textures/hero.png"
 
 
 def test_registry_remove_texture(tmp_path):
-    """remove_texture() deletes the key and persists to disk."""
+    """remove_texture() deletes the key and sets is_dirty to True."""
     project = _write_registry(tmp_path, {"A": "textures/a.png", "B": "textures/b.png"})
     reg = TextureRegistry(project)
     reg.remove_texture("A")
+    assert reg.is_dirty is True
     assert reg.get_path("A") is None
     # The remaining key survives
     assert reg.get_path("B") == "textures/b.png"
 
 
 def test_registry_move_up(tmp_path):
-    """move_up() changes insertion order correctly."""
+    """move_up() changes insertion order and sets is_dirty to True."""
     project = _write_registry(tmp_path, {"A": "a.png", "B": "b.png", "C": "c.png"})
     reg = TextureRegistry(project)
     reg.move_up("B")  # B moves before A
+    assert reg.is_dirty is True
     ids = reg.get_all_ids()
     assert ids == ["B", "A", "C"]
 
 
 def test_registry_move_down(tmp_path):
-    """move_down() changes insertion order correctly."""
+    """move_down() changes insertion order and sets is_dirty to True."""
     project = _write_registry(tmp_path, {"A": "a.png", "B": "b.png", "C": "c.png"})
     reg = TextureRegistry(project)
     reg.move_down("B")  # B moves after C
+    assert reg.is_dirty is True
     ids = reg.get_all_ids()
     assert ids == ["A", "C", "B"]
 
